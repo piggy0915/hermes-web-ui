@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=nousresearch/hermes-agent:latest
+ARG BASE_IMAGE=nousresearch/hermes-agent:v2026.5.16
 FROM ${BASE_IMAGE}
 
 USER root
