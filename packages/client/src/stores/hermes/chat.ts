@@ -333,6 +333,7 @@ export const useChatStore = defineStore('chat', () => {
   const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
   /** sessionId → server-reported isWorking status */
   const serverWorking = ref<Set<string>>(new Set())
+  const sessionProfileFilter = ref<string | null>(null)
   /** sessionId → queued message count */
   const queueLengths = ref<Map<string, number>>(new Map())
   /** sessionId → queued user messages not yet visible in the transcript */
@@ -567,6 +568,10 @@ export const useChatStore = defineStore('chat', () => {
                 setPendingApproval({ ...e, session_id: sessionId } as RunEvent)
               } else if (e.event === 'approval.resolved') {
                 clearPendingApproval({ ...e, session_id: sessionId } as RunEvent)
+              } else if (e.event === 'run.failed') {
+                addAgentErrorMessage(sessionId, e.error)
+                serverWorking.value.delete(sessionId)
+                queueLengths.value.delete(sessionId)
               } else if (e.event === 'tool.started') {
                 const msgs = getSessionMsgs(sessionId)
                 const toolCallId = e.tool_call_id as string | undefined
@@ -690,6 +695,29 @@ export const useChatStore = defineStore('chat', () => {
     if (idx !== -1) {
       s.messages[idx] = { ...s.messages[idx], ...update }
     }
+  }
+
+  function addAgentErrorMessage(sessionId: string, error?: string | null) {
+    const content = error ? `Error: ${error}` : 'Run failed'
+    const msgs = getSessionMsgs(sessionId)
+    const last = msgs[msgs.length - 1]
+    if (last?.isStreaming) {
+      updateMessage(sessionId, last.id, {
+        role: 'assistant',
+        content,
+        isStreaming: false,
+        systemType: 'error',
+      })
+      return
+    }
+    if (last?.role === 'assistant' && last.systemType === 'error' && last.content === content) return
+    addMessage(sessionId, {
+      id: uid(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+      systemType: 'error',
+    })
   }
 
   function handleSessionCommandEvent(evt: RunEvent) {
@@ -1319,22 +1347,8 @@ export const useChatStore = defineStore('chat', () => {
             }
 
             case 'run.failed': {
+              addAgentErrorMessage(sid, evt.error)
               const msgs = getSessionMsgs(sid)
-              const lastErr = msgs[msgs.length - 1]
-              if (lastErr?.isStreaming) {
-                updateMessage(sid, lastErr.id, {
-                  isStreaming: false,
-                  content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-                  role: 'system',
-                })
-              } else {
-                addMessage(sid, {
-                  id: uid(),
-                  role: 'system',
-                  content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-                  timestamp: Date.now(),
-                })
-              }
               msgs.forEach((m, i) => {
                 if (m.role === 'tool' && m.toolStatus === 'running') {
                   msgs[i] = { ...m, toolStatus: 'error' }
@@ -1371,20 +1385,14 @@ export const useChatStore = defineStore('chat', () => {
         // onError
         (err) => {
           console.warn('Socket.IO run stream error:', err.message)
+          addAgentErrorMessage(sid, err.message)
           const msgs = getSessionMsgs(sid)
-          const last = msgs[msgs.length - 1]
-          if (last?.isStreaming) {
-            updateMessage(sid, last.id, { isStreaming: false })
-          }
           msgs.forEach((m, i) => {
             if (m.role === 'tool' && m.toolStatus === 'running') {
-              msgs[i] = { ...m, toolStatus: 'done' }
+              msgs[i] = { ...m, toolStatus: 'error' }
             }
           })
           cleanup()
-          if (sid === activeSessionId.value) {
-            void refreshActiveSession()
-          }
         },
         undefined,
       )
@@ -1756,22 +1764,8 @@ export const useChatStore = defineStore('chat', () => {
           } else {
             queueLengths.value.delete(sid)
           }
+          addAgentErrorMessage(sid, evt.error)
           const msgs = getSessionMsgs(sid)
-          const lastErr = msgs[msgs.length - 1]
-          if (lastErr?.isStreaming) {
-            updateMessage(sid, lastErr.id, {
-              isStreaming: false,
-              content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-              role: 'system',
-            })
-          } else {
-            addMessage(sid, {
-              id: uid(),
-              role: 'system',
-              content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-              timestamp: Date.now(),
-            })
-          }
           msgs.forEach((m, i) => {
             if (m.role === 'tool' && m.toolStatus === 'running') {
               msgs[i] = { ...m, toolStatus: 'error' }
@@ -1952,6 +1946,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     isRunActive,
     isSessionLive,
+    sessionProfileFilter,
     compressionState,
     abortState,
     isAborting,
