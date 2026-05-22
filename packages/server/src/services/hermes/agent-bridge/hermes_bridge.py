@@ -602,6 +602,17 @@ class AgentPool:
 
         def wrapped_compress_context(messages, system_message, **kwargs):
             before_count = len(messages) if isinstance(messages, list) else 0
+            approx_tokens = kwargs.get("approx_tokens")
+            if not isinstance(approx_tokens, int) or approx_tokens <= 0:
+                approx_tokens = self._estimate_context_tokens(agent, messages, system_message)
+            print(
+                "[hermes_bridge] compression requested "
+                f"session={session_id} messages={before_count} "
+                f"tokens={approx_tokens if approx_tokens is not None else 'unknown'} "
+                f"focus={kwargs.get('focus_topic') or ''}",
+                file=sys.stderr,
+                flush=True,
+            )
             request_id = uuid.uuid4().hex
             response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
             with self._lock:
@@ -610,7 +621,7 @@ class AgentPool:
                 "event": "bridge.compression.requested",
                 "request_id": request_id,
                 "message_count": before_count,
-                "approx_tokens": kwargs.get("approx_tokens"),
+                "approx_tokens": approx_tokens,
                 "focus_topic": kwargs.get("focus_topic"),
                 "messages": _jsonable(messages),
             })
@@ -622,12 +633,14 @@ class AgentPool:
                 if not isinstance(compressed_messages, list):
                     raise RuntimeError("bridge compression response missing messages")
                 next_system_message = response.get("system_message", system_message)
+                result_approx_tokens = self._estimate_context_tokens(agent, compressed_messages, next_system_message)
                 self._append_event(session_id, {
                     "event": "bridge.compression.completed",
                     "request_id": request_id,
                     "message_count": before_count,
                     "result_messages": len(compressed_messages),
-                    "approx_tokens": kwargs.get("approx_tokens"),
+                    "approx_tokens": approx_tokens,
+                    "result_approx_tokens": result_approx_tokens,
                     "compressed": True,
                 })
                 return compressed_messages, next_system_message
@@ -636,7 +649,7 @@ class AgentPool:
                     "event": "bridge.compression.failed",
                     "request_id": request_id,
                     "message_count": before_count,
-                    "approx_tokens": kwargs.get("approx_tokens"),
+                    "approx_tokens": approx_tokens,
                     "error": "bridge compression timed out",
                 })
                 raise RuntimeError("bridge compression timed out")
@@ -645,7 +658,7 @@ class AgentPool:
                     "event": "bridge.compression.failed",
                     "request_id": request_id,
                     "message_count": before_count,
-                    "approx_tokens": kwargs.get("approx_tokens"),
+                    "approx_tokens": approx_tokens,
                     "error": str(exc),
                 })
                 raise
@@ -654,6 +667,109 @@ class AgentPool:
                     self._compression_requests.pop(request_id, None)
 
         agent._compress_context = wrapped_compress_context
+
+    def _agent_system_prompt(self, agent: Any, system_message: Any = None) -> str:
+        prompt = str(getattr(agent, "_cached_system_prompt", "") or "")
+        if prompt:
+            return prompt
+        try:
+            build_prompt = getattr(agent, "_build_system_prompt", None)
+            if callable(build_prompt):
+                return str(build_prompt(system_message) or "")
+        except Exception:
+            return str(system_message or "")
+        return str(system_message or "")
+
+    def _agent_tool_names(self, tools: Any) -> list[str]:
+        if not isinstance(tools, list):
+            return []
+        names: list[str] = []
+        for tool in tools:
+            name = ""
+            if isinstance(tool, dict):
+                function = tool.get("function")
+                if isinstance(function, dict):
+                    name = str(function.get("name") or "")
+                if not name:
+                    name = str(tool.get("name") or "")
+            else:
+                name = str(getattr(tool, "name", "") or "")
+            if name:
+                names.append(name)
+        return names
+
+    def _estimate_context_info(self, agent: Any, messages: Any, system_message: Any = None) -> dict[str, Any]:
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+        except Exception:
+            return {}
+
+        prompt = self._agent_system_prompt(agent, system_message)
+        tools = getattr(agent, "tools", None) or []
+        message_list = messages if isinstance(messages, list) else []
+        try:
+            token_count = estimate_request_tokens_rough(message_list, system_prompt=prompt, tools=tools or None)
+            fixed_context_tokens = estimate_request_tokens_rough([], system_prompt=prompt, tools=tools or None)
+            system_prompt_tokens = estimate_request_tokens_rough([], system_prompt=prompt, tools=None)
+            tool_tokens = max(0, int(fixed_context_tokens or 0) - int(system_prompt_tokens or 0))
+            return {
+                "token_count": int(token_count) if isinstance(token_count, (int, float)) and token_count > 0 else None,
+                "fixed_context_tokens": int(fixed_context_tokens) if isinstance(fixed_context_tokens, (int, float)) and fixed_context_tokens >= 0 else None,
+                "system_prompt_tokens": int(system_prompt_tokens) if isinstance(system_prompt_tokens, (int, float)) and system_prompt_tokens >= 0 else None,
+                "tool_tokens": tool_tokens,
+                "message_count": len(message_list),
+                "tool_count": len(tools) if isinstance(tools, list) else 0,
+                "tool_names": self._agent_tool_names(tools),
+                "system_prompt_chars": len(prompt),
+            }
+        except Exception:
+            return {}
+
+    def _estimate_context_tokens(self, agent: Any, messages: Any, system_message: Any = None) -> int | None:
+        token_count = self._estimate_context_info(agent, messages, system_message).get("token_count")
+        return int(token_count) if isinstance(token_count, (int, float)) and token_count > 0 else None
+
+    def _bridge_context_ready_event(self, session: AgentSession, instructions: str | None, profile: str | None) -> dict[str, Any]:
+        info = self._estimate_context_info(session.agent, [], instructions)
+        event = {
+            "event": "bridge.context.ready",
+            "session_id": session.session_id,
+            "profile": profile or session.config.get("profile") or "default",
+            "model": session.config.get("model"),
+            "provider": session.config.get("provider"),
+            **info,
+        }
+        session.config["context_info"] = event
+        return event
+
+    def estimate_context(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]] | None = None,
+        instructions: str | None = None,
+        profile: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        session = self.get_or_create(session_id, profile=profile, model=model, provider=provider)
+        context_info = self._estimate_context_info(session.agent, messages or [], instructions)
+        print(
+            "[hermes_bridge] context estimate "
+            f"session={session_id} profile={profile or 'default'} "
+            f"messages={len(messages or [])} system_prompt_chars={context_info.get('system_prompt_chars') or 0} "
+            f"tools={context_info.get('tool_count') or 0} "
+            f"fixed_tokens={context_info.get('fixed_context_tokens') if context_info.get('fixed_context_tokens') is not None else 'unknown'} "
+            f"tokens={context_info.get('token_count') if context_info.get('token_count') is not None else 'unknown'}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return {
+            "session_id": session_id,
+            "profile": profile or session.config.get("profile") or "default",
+            "model": session.config.get("model"),
+            "provider": session.config.get("provider"),
+            **context_info,
+        }
 
     def respond_compression(
         self,
@@ -994,6 +1110,9 @@ class AgentPool:
             session.running = True
             session.current_run_id = run_id
             session.last_used_at = time.time()
+            context_event = self._bridge_context_ready_event(session, instructions, profile)
+            if context_event:
+                record.events.append(_jsonable(context_event))
 
         thread = threading.Thread(
             target=self._run_chat,
@@ -1328,6 +1447,20 @@ class BridgeServer:
                     time.sleep(0.05)
                 return self.pool.get_result(record.run_id)
             return {"run_id": record.run_id, "session_id": session_id, "status": record.status}
+
+        if action == "context_estimate":
+            session_id = str(req.get("session_id") or "").strip() or uuid.uuid4().hex
+            messages = req.get("messages") or req.get("conversation_history") or []
+            if not isinstance(messages, list):
+                raise ValueError("messages must be a list")
+            return self.pool.estimate_context(
+                session_id,
+                messages=messages,
+                instructions=req.get("instructions") or req.get("system_message"),
+                profile=req.get("profile"),
+                model=req.get("model"),
+                provider=req.get("provider"),
+            )
 
         if action == "get_result":
             return self.pool.get_result(str(req.get("run_id") or ""))
@@ -1867,6 +2000,10 @@ class BridgeBroker:
             return resp
 
         if action == "chat":
+            profile = self._normalize_profile(req.get("profile"))
+            return self._forward(profile, req)
+
+        if action == "context_estimate":
             profile = self._normalize_profile(req.get("profile"))
             return self._forward(profile, req)
 
