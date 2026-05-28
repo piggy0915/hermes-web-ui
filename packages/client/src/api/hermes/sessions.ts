@@ -23,10 +23,20 @@ export interface SessionSummary {
   actual_cost_usd: number | null
   cost_status: string
   workspace?: string | null
+  webui_imported?: boolean
 }
 
 export interface SessionDetail extends SessionSummary {
   messages: HermesMessage[]
+}
+
+export interface PaginatedSessionMessages {
+  session: SessionSummary
+  messages: HermesMessage[]
+  total: number
+  offset: number
+  limit: number
+  hasMore: boolean
 }
 
 export interface SessionSearchResult extends SessionSummary {
@@ -95,6 +105,26 @@ export async function fetchSession(id: string, profile?: string | null): Promise
   }
 }
 
+export async function fetchSessionMessagesPage(
+  id: string,
+  offset: number,
+  limit = 300,
+  profile?: string | null,
+): Promise<PaginatedSessionMessages | null> {
+  try {
+    const params = new URLSearchParams()
+    params.set('offset', String(offset))
+    params.set('limit', String(limit))
+    if (profile) params.set('profile', profile)
+    const res = await request<PaginatedSessionMessages>(
+      `/api/hermes/sessions/conversations/${encodeURIComponent(id)}/messages/paginated?${params}`,
+    )
+    return res
+  } catch {
+    return null
+  }
+}
+
 /**
  * Fetch Hermes session detail only (exclude api_server source)
  */
@@ -120,6 +150,16 @@ export async function deleteSession(id: string, profile?: string | null): Promis
   } catch {
     return false
   }
+}
+
+export async function importHermesSession(id: string, profile?: string | null): Promise<{ ok: boolean; imported: boolean; session?: SessionDetail }> {
+  const params = new URLSearchParams()
+  if (profile) params.set('profile', profile)
+  const query = params.toString()
+  return request<{ ok: boolean; imported: boolean; session?: SessionDetail }>(
+    `/api/hermes/sessions/hermes/${encodeURIComponent(id)}/import${query ? `?${query}` : ''}`,
+    { method: 'POST' },
+  )
 }
 
 export interface BatchDeleteSessionTarget {

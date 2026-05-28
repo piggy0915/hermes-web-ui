@@ -38,10 +38,15 @@ export interface QueuedRun {
   profile: string
   source?: ChatRunSource
   originSocketId?: string
+  goalContinuation?: boolean
 }
 
 export interface SessionState {
   messages: SessionMessage[]
+  messageTotal?: number
+  messageLoadedCount?: number
+  messagePageLimit?: number
+  hasMoreBefore?: boolean
   isWorking: boolean
   events: Array<{ event: string; data: any }>
   abortController?: AbortController
