@@ -6,6 +6,9 @@ import { webhookRoutes } from './webhook'
 import { uploadRoutes } from './upload'
 import { updateRoutes } from './update'
 import { authPublicRoutes, authProtectedRoutes } from './auth'
+import { codingAgentRoutes } from './coding-agents'
+import { claudeCodeProxyRoutes } from './claude-code-proxy'
+import { codexProxyRoutes } from './codex-proxy'
 
 // Hermes route modules
 import { sessionRoutes } from './hermes/sessions'
@@ -43,15 +46,18 @@ export function registerRoutes(app: any, authMiddleware: Array<(ctx: Context, ne
   app.use(healthRoutes.routes())
   app.use(webhookRoutes.routes())
   app.use(authPublicRoutes.routes())
-  app.use(ttsRoutes.routes())              // TTS proxy/generation — must be before auth
+  app.use(claudeCodeProxyRoutes.routes())
+  app.use(codexProxyRoutes.routes())
 
   // --- Auth middleware: all routes below require authentication ---
   authMiddleware.forEach((middleware) => app.use(middleware))
 
   // --- Protected routes (auth required) ---
   app.use(authProtectedRoutes.routes())
+  app.use(ttsRoutes.routes())
   app.use(uploadRoutes.routes())
   app.use(updateRoutes.routes())           // Must be before proxy (proxy catch-all matches everything)
+  app.use(codingAgentRoutes.routes())
   app.use(sessionRoutes.routes())
   app.use(profileRoutes.routes())
   app.use(skillRoutes.routes())

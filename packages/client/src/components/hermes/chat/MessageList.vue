@@ -14,6 +14,7 @@ const { t } = useI18n();
 const { isDark } = useTheme();
 const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<InstanceType<typeof VirtualMessageList> | null>(null);
+const pendingBottomSessionId = ref<string | null>(null);
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -96,6 +97,10 @@ function scrollToMessage(messageId: string) {
   listRef.value?.scrollToMessage(messageId);
 }
 
+function scrollToAnchor(messageId: string, anchorId: string) {
+  listRef.value?.scrollToAnchor(messageId, anchorId);
+}
+
 async function handleTopReach() {
   const session = chatStore.activeSession;
   if (!session?.hasMoreBefore || session.isLoadingOlderMessages) return;
@@ -111,6 +116,7 @@ watch(
   () => chatStore.activeSessionId,
   (id) => {
     if (!id) return;
+    pendingBottomSessionId.value = id;
     if (chatStore.focusMessageId) {
       scrollToMessage(chatStore.focusMessageId);
       return;
@@ -118,6 +124,20 @@ watch(
     scrollToBottom();
   },
   { immediate: true },
+);
+
+watch(
+  () => [chatStore.activeSessionId, chatStore.messages.length] as const,
+  ([id, length]) => {
+    if (!id || pendingBottomSessionId.value !== id || length === 0) return;
+    pendingBottomSessionId.value = null;
+    if (chatStore.focusMessageId) {
+      scrollToMessage(chatStore.focusMessageId);
+      return;
+    }
+    scrollToBottom();
+  },
+  { flush: "post" },
 );
 
 watch(
@@ -155,6 +175,12 @@ watch(currentToolCalls, () => {
   }
   if (!isNearBottom()) return;
   scrollToBottom();
+});
+
+defineExpose({
+  scrollToBottom,
+  scrollToMessage,
+  scrollToAnchor,
 });
 </script>
 
