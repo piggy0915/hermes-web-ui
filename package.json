@@ -121,6 +121,7 @@
     "vue-i18n": "^11.3.2",
     "vue-router": "^4.6.4",
     "vue-tsc": "^3.2.8",
+    "vue-virtual-scroller": "^3.0.4",
     "ws": "^8.20.0"
   }
 }
