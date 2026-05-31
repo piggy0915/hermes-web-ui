@@ -65,6 +65,12 @@ def _positive_int(value: str | None) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _hidden_subprocess_kwargs() -> dict[str, int]:
+    if os.name != "nt":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
 def _process_exists(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -76,6 +82,7 @@ def _process_exists(pid: int) -> bool:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                **_hidden_subprocess_kwargs(),
             )
             return str(pid) in (result.stdout or "")
         except Exception:
@@ -1554,7 +1561,20 @@ class AgentPool:
         with _profile_env(profile):
             def stream_callback(delta: str) -> None:
                 with self._lock:
-                    record.deltas.append(str(delta))
+                    text = str(delta)
+                    # Keep `deltas` for the aggregated `output`/resume snapshot,
+                    # AND record each text chunk as an ordered event in the SAME
+                    # `events` list used by tool.started/tool.completed. Text and
+                    # tool events were previously tracked in two parallel lists
+                    # with no relative ordering, so when the model interleaved
+                    # narration and tool calls ("text → tool → more text") the
+                    # consumer reordered them — processing all events before the
+                    # aggregated delta — which visibly split a word across the
+                    # tool boundary. Recording text as ordered events preserves
+                    # the true interleaving.
+                    record.deltas.append(text)
+                    if text:
+                        record.events.append({"event": "stream.delta", "delta": text})
 
             approval_session_token = None
             registered_gateway_approval_session = None
@@ -2297,7 +2317,351 @@ class BridgeServer:
             self._stop.set()
             return {"status": "shutting_down"}
 
+        # ───── MCP Management (forwarded from broker) ─────
+        if action.startswith("mcp_"):
+            return self._handle_mcp_action(action, req, req.get("profile"))
+
         raise ValueError(f"unknown action: {action}")
+
+    # ───── MCP Management Methods (for BridgeServer worker process) ─────
+
+    def _read_mcp_config(self, profile=None):
+        """Read config.yaml for the given profile."""
+        import yaml
+        config_path = _profile_home(profile) / "config.yaml"
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
+
+    def _save_mcp_config(self, cfg, profile=None):
+        """Save config.yaml for the given profile using atomic write."""
+        import yaml
+        from utils import atomic_yaml_write
+        config_path = _profile_home(profile) / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            atomic_yaml_write(config_path, cfg, sort_keys=False)
+        except Exception as e:
+            raise RuntimeError(f"Failed to save config to {config_path}: {e}")
+
+    @staticmethod
+    def _run_mcp_discovery_bg(discover_fn, profile: str | None = None):
+        """Run MCP discovery in a background thread to avoid blocking."""
+        def _bg():
+            original = _apply_profile_env(profile)
+            try:
+                discover_fn()
+            except Exception as e:
+                print(f"[mcp-discovery-bg] failed: {e}", file=sys.stderr, flush=True)
+            finally:
+                _restore_profile_env(original)
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _handle_mcp_action(self, action: str, req: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
+        """Handle MCP management actions in worker process."""
+        try:
+            from tools.mcp_tool import discover_mcp_tools, register_mcp_servers, _run_on_mcp_loop, _servers, _lock
+        except ImportError:
+            return {"error": "MCP tool module not available", "ok": False}
+
+        if profile is None:
+            profile = _worker_profile() or "default"
+
+        dispatch = {
+            "mcp_list":            lambda: self._mcp_list(profile, _servers, _lock),
+            "mcp_server_add":      lambda: self._mcp_server_add(req, profile, discover_mcp_tools),
+            "mcp_server_update":   lambda: self._mcp_server_update(req, profile, _servers, _lock, _run_on_mcp_loop, discover_mcp_tools),
+            "mcp_server_remove":   lambda: self._mcp_server_remove(req, profile, _servers, _lock, _run_on_mcp_loop),
+            "mcp_server_test":     lambda: self._mcp_server_test(req, _servers, _lock),
+            "mcp_tools_list":      lambda: self._mcp_tools_list(req, profile, _servers, _lock),
+            "mcp_reload":          lambda: self._mcp_reload(req, profile, _servers, _lock, _run_on_mcp_loop, discover_mcp_tools, register_mcp_servers),
+        }
+        handler = dispatch.get(action)
+        if handler:
+            return handler()
+        return {"error": f"unknown MCP action: {action}", "ok": False}
+
+    # ───── MCP sub-handlers ─────
+
+    def _build_server_entry(self, name: str, cfg: dict, connected: bool = False,
+                            tools_count: int = 0, registered_count: int = 0,
+                            raw_names: list | None = None, registered_names: list | None = None,
+                            tool_details: list | None = None,
+                            error: str | None = None) -> dict[str, Any]:
+        """Build a normalized server entry dict for API responses."""
+        transport = "http" if cfg.get("url") else "stdio"
+        return {
+            "name": name,
+            "transport": transport,
+            "connected": connected,
+            "tools": tools_count,
+            "tools_registered": registered_count,
+            "tool_names": raw_names or [],
+            "tool_names_registered": registered_names or [],
+            "tool_details": tool_details or [],
+            "error": error,
+            "raw_config": cfg if isinstance(cfg, dict) else {},
+        }
+
+    def _mcp_list(self, profile: str, _servers, _lock) -> dict[str, Any]:
+        servers = []
+        total_tools = 0
+
+        config = self._read_mcp_config(profile)
+        mcp_configs = config.get("mcp_servers", {}) or {} if config else {}
+        profile_server_names = set(mcp_configs.keys())
+
+        with _lock:
+            server_snapshot = list(_servers.items())
+        for name, task in server_snapshot:
+            if name not in profile_server_names:
+                continue
+            raw_tool_names = []
+            try:
+                for mcp_tool in getattr(task, "_tools", []):
+                    if hasattr(mcp_tool, "name"):
+                        raw_tool_names.append(mcp_tool.name)
+            except Exception:
+                pass
+            registered = list(getattr(task, "_registered_tool_names", None) or [])
+            if not registered:
+                registered = list(raw_tool_names)
+            t = getattr(task, "_task", None)
+            connected = bool(t and not t.done())
+            err = getattr(task, "_error", None)
+            cfg = getattr(task, "_config", {})
+            # Build filtered tool_details (name + description) for card display
+            srv_cfg = mcp_configs.get(name, {}) if isinstance(mcp_configs.get(name), dict) else {}
+            tools_filter = srv_cfg.get("tools") if isinstance(srv_cfg.get("tools"), dict) else {}
+            has_include_filter = "include" in tools_filter
+            has_exclude_filter = "exclude" in tools_filter
+            include_set = set(tools_filter.get("include") or [])
+            exclude_set = set(tools_filter.get("exclude") or [])
+            tool_details = []
+            try:
+                for mcp_tool in getattr(task, "_tools", []):
+                    tname = getattr(mcp_tool, "name", "?")
+                    if has_include_filter and tname not in include_set:
+                        continue
+                    if has_exclude_filter and tname in exclude_set:
+                        continue
+                    tool_details.append({
+                        "name": tname,
+                        "description": getattr(mcp_tool, "description", ""),
+                    })
+            except Exception:
+                pass
+            entry = self._build_server_entry(
+                name, cfg, connected=connected,
+                tools_count=len(raw_tool_names), registered_count=len(registered),
+                raw_names=raw_tool_names, registered_names=registered,
+                tool_details=tool_details,
+                error=str(err) if err else None,
+            )
+            servers.append(entry)
+            total_tools += len(registered)
+
+        # Add servers from config that are not in runtime _servers
+        if config:
+            existing = {s["name"] for s in servers}
+            for name, cfg in mcp_configs.items():
+                if name not in existing and isinstance(cfg, dict):
+                    servers.append(self._build_server_entry(name, cfg))
+
+        return {"servers": servers, "total_tools": total_tools, "ok": True}
+
+    def _mcp_server_add(self, req: dict, profile: str, discover_mcp_tools) -> dict[str, Any]:
+        name = str(req.get("name") or "").strip()
+        config = req.get("config", {})
+        if not name or not isinstance(config, dict):
+            return {"error": "name and config are required", "ok": False}
+
+        cfg = self._read_mcp_config(profile)
+        if not cfg:
+            return {"error": "config.yaml not found", "ok": False}
+
+        mcp_servers = cfg.setdefault("mcp_servers", {})
+        if not isinstance(mcp_servers, dict):
+            mcp_servers = {}
+            cfg["mcp_servers"] = mcp_servers
+        if name in mcp_servers:
+            return {"error": f"server '{name}' already exists, use update instead", "ok": False}
+        mcp_servers[name] = config
+
+        self._save_mcp_config(cfg, profile)
+        self._run_mcp_discovery_bg(discover_mcp_tools, profile)
+
+        return {"ok": True, "name": name}
+
+    @staticmethod
+    def _shutdown_mcp_server(name: str, _servers, _lock, run_on_mcp_loop) -> bool:
+        with _lock:
+            task = _servers.get(name)
+        if task is None:
+            return False
+
+        try:
+            run_on_mcp_loop(lambda: task.shutdown(), timeout=15)
+        except Exception as e:
+            print(f"[mcp-server-shutdown] failed for {name}: {e}", file=sys.stderr, flush=True)
+        finally:
+            with _lock:
+                if _servers.get(name) is task:
+                    _servers.pop(name, None)
+        return True
+
+    def _shutdown_mcp_servers(self, names: list[str], _servers, _lock, run_on_mcp_loop) -> int:
+        stopped = 0
+        for name in names:
+            if self._shutdown_mcp_server(name, _servers, _lock, run_on_mcp_loop):
+                stopped += 1
+        return stopped
+
+    def _mcp_server_update(self, req: dict, profile: str, _servers, _lock, run_on_mcp_loop, discover_mcp_tools) -> dict[str, Any]:
+        name = str(req.get("name") or "").strip()
+        config = req.get("config", {})
+        if not name or not isinstance(config, dict):
+            return {"error": "name and config are required", "ok": False}
+
+        cfg = self._read_mcp_config(profile)
+        if not cfg:
+            return {"error": "config.yaml not found", "ok": False}
+
+        mcp_servers = cfg.setdefault("mcp_servers", {})
+        if not isinstance(mcp_servers, dict):
+            mcp_servers = {}
+            cfg["mcp_servers"] = mcp_servers
+        if name not in mcp_servers:
+            return {"error": f"server \'{name}\' not found in config", "ok": False}
+
+        mcp_servers[name] = config
+
+        self._save_mcp_config(cfg, profile)
+
+        self._shutdown_mcp_server(name, _servers, _lock, run_on_mcp_loop)
+
+        self._run_mcp_discovery_bg(discover_mcp_tools, profile)
+
+        return {"ok": True}
+
+    def _mcp_server_remove(self, req: dict, profile: str, _servers, _lock, run_on_mcp_loop) -> dict[str, Any]:
+        name = str(req.get("name") or "").strip()
+        if not name:
+            return {"error": "name is required", "ok": False}
+
+        # Write config first, then remove from memory
+        cfg = self._read_mcp_config(profile)
+        if cfg:
+            mcp_servers = cfg.get("mcp_servers", {})
+            if isinstance(mcp_servers, dict) and name in mcp_servers:
+                del mcp_servers[name]
+                self._save_mcp_config(cfg, profile)
+
+        self._shutdown_mcp_server(name, _servers, _lock, run_on_mcp_loop)
+
+        return {"ok": True}
+
+    def _mcp_server_test(self, req: dict, _servers, _lock) -> dict[str, Any]:
+        name = str(req.get("name") or "").strip()
+        if not name:
+            return {"error": "name is required", "ok": False}
+
+        with _lock:
+            task = _servers.get(name)
+        if not task:
+            return {"error": f"server \'{name}\' is not connected", "ok": False}
+
+        tool_names = []
+        try:
+            for mcp_tool in getattr(task, "_tools", []):
+                if hasattr(mcp_tool, "name"):
+                    tool_names.append(mcp_tool.name)
+        except Exception as e:
+            return {"error": f"failed to list tools: {e}", "ok": False}
+
+        return {"ok": True, "tools": tool_names}
+
+    def _mcp_tools_list(self, req: dict, profile: str, _servers, _lock) -> dict[str, Any]:
+        server_filter = str(req.get("server") or "").strip() or None
+        raw_mode = bool(req.get("raw"))  # Return unfiltered tools for visibility management
+        results = []
+
+        config = self._read_mcp_config(profile)
+        mcp_configs = config.get("mcp_servers", {}) or {} if config else {}
+        profile_server_names = set(mcp_configs.keys())
+
+        with _lock:
+            server_snapshot = list(_servers.items())
+        for sname, task in server_snapshot:
+            if sname not in profile_server_names:
+                continue
+            if server_filter and sname != server_filter:
+                continue
+            registered = set(getattr(task, "_registered_tool_names", None) or [])
+            tools = []
+            srv_cfg = mcp_configs.get(sname, {}) if isinstance(mcp_configs.get(sname), dict) else {}
+            tools_filter = srv_cfg.get("tools") if isinstance(srv_cfg.get("tools"), dict) else {}
+            has_include_filter = "include" in tools_filter
+            has_exclude_filter = "exclude" in tools_filter
+            include_set = set(tools_filter.get("include") or [])
+            exclude_set = set(tools_filter.get("exclude") or [])
+            def _should_include(tn):
+                if raw_mode:
+                    return True  # Skip filter in raw mode
+                if has_include_filter:
+                    return tn in include_set
+                if has_exclude_filter:
+                    return tn not in exclude_set
+                return True
+            try:
+                for mcp_tool in getattr(task, "_tools", []):
+                    tname = getattr(mcp_tool, "name", "?")
+                    if not _should_include(tname):
+                        continue
+                    tools.append({
+                        "name": tname,
+                        "description": getattr(mcp_tool, "description", ""),
+                        "input_schema": getattr(mcp_tool, "inputSchema", {}),
+                    })
+            except Exception as e:
+                results.append({"server": sname, "tools": [], "error": str(e)})
+                continue
+            results.append({"server": sname, "tools": tools})
+
+        return {"ok": True, "results": results}
+
+    def _mcp_reload(self, req: dict, profile: str, _servers, _lock, run_on_mcp_loop,
+                    discover_mcp_tools, register_mcp_servers) -> dict[str, Any]:
+        target = str(req.get("server") or "").strip() or None
+
+        config = self._read_mcp_config(profile)
+        mcp_configs = config.get("mcp_servers", {}) or {} if config else {}
+        profile_server_names = set(mcp_configs.keys())
+
+        if target and target not in mcp_configs:
+            return {"error": "server \'%s\' not found in config" % target, "ok": False}
+
+        if target:
+            self._shutdown_mcp_server(target, _servers, _lock, run_on_mcp_loop)
+        else:
+            self._shutdown_mcp_servers(list(profile_server_names), _servers, _lock, run_on_mcp_loop)
+
+        # Run discovery in background to avoid blocking the request
+        if target:
+            def _reload_single():
+                original = _apply_profile_env(profile)
+                try:
+                    server_config = {target: mcp_configs.get(target, {})}
+                    register_mcp_servers(server_config)
+                finally:
+                    _restore_profile_env(original)
+            self._run_mcp_discovery_bg(_reload_single, profile)
+        else:
+            self._run_mcp_discovery_bg(discover_mcp_tools, profile)
+
+        return {"ok": True, "message": "MCP servers reloaded"}
 
     def _make_server_socket(self) -> socket.socket:
         return _make_listen_socket(self.endpoint)
@@ -2428,6 +2792,7 @@ class WorkerProcess:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                **_hidden_subprocess_kwargs(),
             )
             self._pipe_stderr()
             self._wait_ready()
@@ -2600,6 +2965,7 @@ def _windows_listening_pids_on_port(port: int) -> list[int]:
             encoding=_platform_text_encoding(),
             errors="ignore",
             timeout=5,
+            **_hidden_subprocess_kwargs(),
         )
     except Exception:
         return []
@@ -2642,6 +3008,7 @@ def _kill_windows_endpoint_occupants(endpoint: str) -> None:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                **_hidden_subprocess_kwargs(),
             )
         except Exception as exc:
             print(
@@ -2829,9 +3196,13 @@ class BridgeBroker:
         forwarded = dict(req)
         forwarded["profile"] = profile
         forwarded.pop("worker_key", None)
-        resp = worker.request(forwarded, self._worker_request_timeout(req))
-        self._record_response_routes(profile, key, resp)
-        return resp
+        try:
+            resp = worker.request(forwarded, self._worker_request_timeout(req))
+            self._record_response_routes(profile, key, resp)
+            return resp
+        except RuntimeError as e:
+            # Worker returned ok=false or connection error — return error response
+            return {"ok": False, "error": str(e)}
 
     def _worker_request_timeout(self, req: dict[str, Any]) -> float:
         try:
@@ -3036,6 +3407,11 @@ class BridgeBroker:
         if action == "shutdown":
             self.stop()
             return {"status": "shutting_down"}
+
+        # ───── MCP Management ─────
+        if action.startswith("mcp_"):
+            profile = self._normalize_profile(req.get("profile"))
+            return self._forward(profile, req)
 
         raise ValueError(f"unknown action: {action}")
 

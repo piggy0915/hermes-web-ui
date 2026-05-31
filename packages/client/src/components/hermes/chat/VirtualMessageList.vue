@@ -20,6 +20,16 @@ type AnchorTarget = {
   anchorId: string;
   align: AnchorAlign;
 }
+type BottomScrollOptions = number | {
+  frames?: number;
+  keepAliveMs?: number;
+}
+type ViewportScrollSnapshot = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  wasNearBottom: boolean;
+}
 
 const props = withDefaults(defineProps<{
   messages: VirtualItem[];
@@ -54,9 +64,12 @@ const scrollTop = ref(0);
 const viewportHeight = ref(0);
 let keepBottomUntil = 0;
 let bottomFrame: number | null = null;
+let bottomFrameRemaining = 0;
+let bottomFrameAttempts = 0;
 let anchorFrame: number | null = null;
 let anchorToken = 0;
 let activeAnchorTarget: AnchorTarget | null = null;
+let viewportRestoreFrame: number | null = null;
 
 const messageKeys = computed(() => props.messages.map(messageKey));
 const bufferPx = computed(() => Math.max(props.estimatedItemHeight, props.estimatedItemHeight * props.overscan));
@@ -94,35 +107,54 @@ function isNearBottom(threshold = 200): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
 }
 
-function scrollToBottom() {
-  keepBottomUntil = Date.now() + 700;
+function scrollToBottom(options: BottomScrollOptions = {}) {
+  const frames = typeof options === "number" ? options : options.frames ?? 5;
+  const keepAliveMs = typeof options === "number" ? 700 : options.keepAliveMs ?? 700;
+  keepBottomUntil = Date.now() + keepAliveMs;
   nextTick(() => {
-    scheduleScrollToBottom(3);
+    scheduleScrollToBottom(frames);
   });
 }
 
-function setScrollToBottomNow() {
+function setScrollToBottomNow(): boolean {
   const el = getScrollerElement();
   scrollerRef.value?.scrollToBottom();
   if (el) {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    syncViewport();
+    return true;
   }
-  syncViewport();
+  return false;
 }
 
 function scheduleScrollToBottom(frames = 1) {
-  if (bottomFrame != null) cancelAnimationFrame(bottomFrame);
+  bottomFrameRemaining = Math.max(bottomFrameRemaining, frames);
+  if (bottomFrame != null) return;
 
-  const step = (remaining: number) => {
-    setScrollToBottomNow();
-    if (remaining <= 1) {
+  const step = () => {
+    const scrolled = setScrollToBottomNow();
+    if (scrolled) {
+      bottomFrameAttempts = 0;
+      bottomFrameRemaining -= 1;
+    } else {
+      bottomFrameAttempts += 1;
+    }
+    if (bottomFrameRemaining <= 0) {
       bottomFrame = null;
+      bottomFrameRemaining = 0;
+      bottomFrameAttempts = 0;
       return;
     }
-    bottomFrame = requestAnimationFrame(() => step(remaining - 1));
+    if (bottomFrameAttempts > 30) {
+      bottomFrame = null;
+      bottomFrameRemaining = 0;
+      bottomFrameAttempts = 0;
+      return;
+    }
+    bottomFrame = requestAnimationFrame(step);
   };
 
-  bottomFrame = requestAnimationFrame(() => step(frames));
+  bottomFrame = requestAnimationFrame(step);
 }
 
 function findTargetElement(messageId: string, anchorId: string): HTMLElement | null {
@@ -260,6 +292,53 @@ function restoreScrollPosition(snapshot: { scrollTop: number; scrollHeight: numb
   });
 }
 
+function captureViewportPosition(): ViewportScrollSnapshot | null {
+  const el = getScrollerElement();
+  if (!el) return null;
+  return {
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+    wasNearBottom: isNearBottom(64),
+  };
+}
+
+function restoreViewportPosition(snapshot: ViewportScrollSnapshot | null, frames = 4) {
+  if (!snapshot) return;
+  keepBottomUntil = 0;
+  if (bottomFrame != null) {
+    cancelAnimationFrame(bottomFrame);
+    bottomFrame = null;
+    bottomFrameRemaining = 0;
+    bottomFrameAttempts = 0;
+  }
+  if (viewportRestoreFrame != null) cancelAnimationFrame(viewportRestoreFrame);
+
+  nextTick(() => {
+    let remaining = frames;
+    const step = () => {
+      const el = getScrollerElement();
+      if (!el) {
+        viewportRestoreFrame = null;
+        return;
+      }
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const nextScrollTop = Math.min(maxScrollTop, Math.max(0, snapshot.scrollTop));
+      scrollerRef.value?.scrollToPosition(nextScrollTop);
+      el.scrollTop = nextScrollTop;
+      syncViewport();
+
+      remaining -= 1;
+      if (remaining <= 0) {
+        viewportRestoreFrame = null;
+        return;
+      }
+      viewportRestoreFrame = requestAnimationFrame(step);
+    };
+    viewportRestoreFrame = requestAnimationFrame(step);
+  });
+}
+
 let resizeObserver: ResizeObserver | null = null;
 
 onMounted(() => {
@@ -275,7 +354,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (bottomFrame != null) cancelAnimationFrame(bottomFrame);
+  bottomFrameRemaining = 0;
+  bottomFrameAttempts = 0;
   if (anchorFrame != null) cancelAnimationFrame(anchorFrame);
+  if (viewportRestoreFrame != null) cancelAnimationFrame(viewportRestoreFrame);
   resizeObserver?.disconnect();
 });
 
@@ -291,6 +373,8 @@ defineExpose({
   scrollToAnchor,
   captureScrollPosition,
   restoreScrollPosition,
+  captureViewportPosition,
+  restoreViewportPosition,
 });
 </script>
 
@@ -344,6 +428,7 @@ defineExpose({
   min-height: 0;
   display: flex;
   position: relative;
+  animation: message-list-fade-in 1.5s ease both;
 }
 
 .virtual-message-list {
@@ -377,5 +462,21 @@ defineExpose({
   width: 100%;
   height: 100%;
   min-height: 0;
+}
+
+@keyframes message-list-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .virtual-message-list-host {
+    animation: none;
+  }
 }
 </style>
