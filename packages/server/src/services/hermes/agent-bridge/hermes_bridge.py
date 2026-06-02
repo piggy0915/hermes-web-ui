@@ -10,6 +10,7 @@ delimited JSON request/response protocol over a local socket.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import atexit
 import copy
 import errno
@@ -65,10 +66,84 @@ def _positive_int(value: str | None) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _hidden_subprocess_kwargs() -> dict[str, int]:
+def _hidden_subprocess_kwargs() -> dict[str, Any]:
     if os.name != "nt":
         return {}
-    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    if os.environ.get("HERMES_DESKTOP", "").strip().lower() != "true":
+        return {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0x08000000
+    kwargs: dict[str, Any] = {"creationflags": create_no_window}
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
+
+
+def _add_hidden_process_options(kwargs: dict[str, Any], create_no_window: int) -> None:
+    flags = kwargs.get("creationflags", 0) or 0
+    try:
+        kwargs["creationflags"] = int(flags) | create_no_window
+    except Exception:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo = kwargs.get("startupinfo")
+    if startupinfo is None:
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+        except Exception:
+            return
+        kwargs["startupinfo"] = startupinfo
+    try:
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    except Exception:
+        pass
+
+
+def _install_windows_hidden_subprocess_defaults() -> None:
+    """Hide console windows for subprocesses launched inside desktop bridge runs.
+
+    The desktop bridge itself must keep stdout/stderr pipes for readiness and
+    worker handshakes, so it runs under python.exe. On Windows that means any
+    nested console executable, including git.exe from context expansion, can
+    flash a window unless the child process is created with CREATE_NO_WINDOW.
+    """
+    if os.name != "nt":
+        return
+    if os.environ.get("HERMES_DESKTOP", "").strip().lower() != "true":
+        return
+    if getattr(subprocess, "_hermes_hidden_defaults_installed", False):
+        return
+
+    original_popen = subprocess.Popen
+    original_create_subprocess_exec = asyncio.create_subprocess_exec
+    original_create_subprocess_shell = asyncio.create_subprocess_shell
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0x08000000
+
+    class HiddenPopen(original_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _add_hidden_process_options(kwargs, create_no_window)
+            super().__init__(*args, **kwargs)
+
+    async def hidden_create_subprocess_exec(*args: Any, **kwargs: Any) -> Any:
+        _add_hidden_process_options(kwargs, create_no_window)
+        return await original_create_subprocess_exec(*args, **kwargs)
+
+    async def hidden_create_subprocess_shell(*args: Any, **kwargs: Any) -> Any:
+        _add_hidden_process_options(kwargs, create_no_window)
+        return await original_create_subprocess_shell(*args, **kwargs)
+
+    subprocess.Popen = HiddenPopen  # type: ignore[assignment]
+    asyncio.create_subprocess_exec = hidden_create_subprocess_exec  # type: ignore[assignment]
+    asyncio.create_subprocess_shell = hidden_create_subprocess_shell  # type: ignore[assignment]
+    subprocess._hermes_hidden_defaults_installed = True  # type: ignore[attr-defined]
+
+
+_install_windows_hidden_subprocess_defaults()
 
 
 def _process_exists(pid: int) -> bool:
@@ -2791,6 +2866,8 @@ class WorkerProcess:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 **_hidden_subprocess_kwargs(),
             )

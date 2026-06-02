@@ -33,12 +33,12 @@ npm run build
 
 ## CI Mapping
 
-- Build workflow: installs dependencies, runs coverage, builds production assets,
-  then runs a Linux desktop smoke test on pull requests.
+- Build workflow: installs dependencies, runs coverage, and builds production
+  assets on pushes and pull requests.
 - Playwright workflow: runs browser e2e tests.
 - NPM lockfile workflow: verifies `package-lock.json` is synchronized.
-- Desktop release workflow: builds and uploads platform-specific desktop artifacts
-  for release tags.
+- Desktop release and manual desktop build workflows build and upload
+  platform-specific desktop artifacts.
 - Docker workflow: builds and publishes release images.
 
 ## Release Workflow Guardrail
@@ -51,7 +51,7 @@ Expected desktop release outputs:
 
 | Target | Required release globs |
 | --- | --- |
-| macOS | `*.dmg`, `*.dmg.blockmap`, `latest*.yml` |
+| macOS | `*.dmg`, `*.dmg.blockmap`, `*.zip`, `*.zip.blockmap`, `latest*.yml` |
 | Windows | `*.exe`, `*.exe.blockmap`, `latest*.yml` |
 | Linux x64 | `*.AppImage`, `*.deb`, `latest*.yml` |
 | Linux arm64 | `*.AppImage`, `latest*.yml` |
