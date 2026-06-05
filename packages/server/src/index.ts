@@ -21,8 +21,10 @@ import { ChatRunSocket } from './services/hermes/run-chat'
 import { getAgentBridgeManager, startAgentBridgeManager } from './services/hermes/agent-bridge'
 import { HermesSkillInjector } from './services/hermes/skill-injector'
 import { ensureProfileGatewaysRunning } from './services/hermes/gateway-autostart'
+import { refreshConfiguredProviderModelCatalogsInBackground } from './services/hermes/model-catalog-cache'
 import { logger } from './services/logger'
 import { requireUserJwt, resolveUserProfile } from './middleware/user-auth'
+import { createCorsOriginResolver, securityHeaders } from './security'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
 declare const __APP_VERSION__: string
@@ -85,13 +87,30 @@ function isDesktopRuntime(): boolean {
   return String(process.env.HERMES_DESKTOP || '').trim().toLowerCase() === 'true'
 }
 
+function envFlagEnabled(name: string): boolean {
+  const value = String(process.env[name] || '').trim().toLowerCase()
+  return ['1', 'true', 'yes', 'on'].includes(value)
+}
+
+function gatewayAutostartDisabled(): boolean {
+  return envFlagEnabled('HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
+}
+
+function skillInjectionDisabled(): boolean {
+  return envFlagEnabled('HERMES_WEB_UI_DISABLE_SKILL_INJECTION')
+}
+
 async function startRuntimeServicesBeforeListen(): Promise<void> {
-  try {
-    await ensureProfileGatewaysRunning()
-    console.log('[bootstrap] profile gateways checked')
-  } catch (err) {
-    logger.warn(err, '[bootstrap] failed to ensure profile gateways')
-    console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
+  if (gatewayAutostartDisabled()) {
+    console.log('[bootstrap] profile gateway check disabled by HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
+  } else {
+    try {
+      await ensureProfileGatewaysRunning()
+      console.log('[bootstrap] profile gateways checked')
+    } catch (err) {
+      logger.warn(err, '[bootstrap] failed to ensure profile gateways')
+      console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
+    }
   }
 
   try {
@@ -104,15 +123,19 @@ async function startRuntimeServicesBeforeListen(): Promise<void> {
 }
 
 function startRuntimeServicesAfterListen(): void {
-  void (async () => {
-    try {
-      await ensureProfileGatewaysRunning()
-      console.log('[bootstrap] profile gateways checked')
-    } catch (err) {
-      logger.warn(err, '[bootstrap] failed to ensure profile gateways')
-      console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
-    }
-  })()
+  if (gatewayAutostartDisabled()) {
+    console.log('[bootstrap] profile gateway check disabled by HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART')
+  } else {
+    void (async () => {
+      try {
+        await ensureProfileGatewaysRunning()
+        console.log('[bootstrap] profile gateways checked')
+      } catch (err) {
+        logger.warn(err, '[bootstrap] failed to ensure profile gateways')
+        console.warn('[bootstrap] failed to ensure profile gateways:', err instanceof Error ? err.message : err)
+      }
+    })()
+  }
 
   void (async () => {
     try {
@@ -133,24 +156,28 @@ export async function bootstrap() {
   }
 
   await initLoginLimiter()
-  try {
-    const skillInjector = new HermesSkillInjector()
-    const injectionResult = await skillInjector.injectMissingSkills()
-    if (injectionResult.injected.length > 0) {
-      logger.info({
-        injected: [...new Set(injectionResult.injected)],
-        targetCount: injectionResult.targets.length,
-      }, '[bootstrap] bundled skills injected')
+  if (skillInjectionDisabled()) {
+    console.log('[bootstrap] bundled skill injection disabled by HERMES_WEB_UI_DISABLE_SKILL_INJECTION')
+  } else {
+    try {
+      const skillInjector = new HermesSkillInjector()
+      const injectionResult = await skillInjector.injectMissingSkills()
+      if (injectionResult.injected.length > 0) {
+        logger.info({
+          injected: [...new Set(injectionResult.injected)],
+          targetCount: injectionResult.targets.length,
+        }, '[bootstrap] bundled skills injected')
+      }
+      if (injectionResult.updated.length > 0) {
+        logger.info({
+          updated: [...new Set(injectionResult.updated)],
+          targetCount: injectionResult.targets.length,
+        }, '[bootstrap] bundled skills updated')
+      }
+    } catch (err) {
+      logger.warn(err, '[bootstrap] failed to inject bundled skills')
+      console.warn('[bootstrap] failed to inject bundled skills:', err instanceof Error ? err.message : err)
     }
-    if (injectionResult.updated.length > 0) {
-      logger.info({
-        updated: [...new Set(injectionResult.updated)],
-        targetCount: injectionResult.targets.length,
-      }, '[bootstrap] bundled skills updated')
-    }
-  } catch (err) {
-    logger.warn(err, '[bootstrap] failed to inject bundled skills')
-    console.warn('[bootstrap] failed to inject bundled skills:', err instanceof Error ? err.message : err)
   }
 
   if (!isDesktopRuntime()) {
@@ -166,7 +193,8 @@ export async function bootstrap() {
   await new Promise(resolve => setTimeout(resolve, 1000))
   console.log('[bootstrap] all stores initialized')
 
-  app.use(cors({ origin: config.corsOrigins }))
+  app.use(securityHeaders())
+  app.use(cors({ origin: createCorsOriginResolver(config.corsOrigins) }))
   // Raise JSON/text limits above the default 1mb: profile avatars are posted
   // as base64 data URLs (up to ~1MB raw → ~1.37MB base64), which otherwise
   // tripped a 413 in the body parser before reaching the handler.
@@ -232,6 +260,7 @@ export async function bootstrap() {
   console.log(`Server: http://localhost:${config.port} (LAN: http://${localIp}:${config.port})`)
   console.log(`Log: ${config.appHome}/logs/server.log`)
   logger.info('Server: http://localhost:%d (LAN: http://%s:%d)', config.port, localIp, config.port)
+  refreshConfiguredProviderModelCatalogsInBackground('bootstrap')
 
   if (isDesktopRuntime()) {
     agentBridgeManager = getAgentBridgeManager()
