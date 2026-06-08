@@ -20,7 +20,17 @@ export interface StartRunRequest {
   provider?: string
   model_groups?: Array<{ provider: string; models: string[] }>
   queue_id?: string
-  source?: 'api_server' | 'cli'
+  source?: 'api_server' | 'cli' | 'coding_agent'
+  coding_agent_id?: 'claude-code' | 'codex'
+  agent_id?: 'claude-code' | 'codex'
+  mode?: 'scoped' | 'global'
+  workspace?: string | null
+  baseUrl?: string
+  base_url?: string
+  apiKey?: string
+  api_key?: string
+  apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
+  api_mode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
 }
 
 export interface StartRunResponse {
@@ -411,6 +421,16 @@ function globalAgentEventHandler(event: RunEvent): void {
   }
 }
 
+function globalRunReattachFailedHandler(event: RunEvent): void {
+  const sid = event.session_id
+  if (!sid) return
+
+  const handlers = sessionEventHandlers.get(sid)
+  if (handlers?.onAgentEvent) {
+    handlers.onAgentEvent(event)
+  }
+}
+
 function globalApprovalRequestedHandler(event: RunEvent): void {
   const sid = event.session_id
   if (!sid) return
@@ -648,6 +668,7 @@ export function connectChatRun(requestedProfile?: string | null): Socket {
     // Usage events
     chatRunSocket.on('usage.updated', globalUsageUpdatedHandler)
     chatRunSocket.on('agent.event', globalAgentEventHandler)
+    chatRunSocket.on('run.reattach_failed', globalRunReattachFailedHandler)
     chatRunSocket.on('session.command', globalSessionCommandHandler)
     chatRunSocket.on('session.title.updated', globalSessionTitleUpdatedHandler)
 
@@ -693,7 +714,12 @@ export function resumeSession(
 ): Socket {
   const socket = connectChatRun(profile)
 
-  socket.once('resumed', onResumed)
+  const handleResumed = (data: ResumeSessionPayload) => {
+    if (data?.session_id !== sessionId) return
+    removeSocketListener(socket, 'resumed', handleResumed)
+    onResumed(data)
+  }
+  socket.on('resumed', handleResumed)
   socket.emit('resume', { session_id: sessionId, ...(profile ? { profile } : {}) })
 
   return socket
