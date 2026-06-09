@@ -8,6 +8,7 @@ import ModelSelector from "./ModelSelector.vue";
 import ProfileSelector from "./ProfileSelector.vue";
 import LanguageSwitch from "./LanguageSwitch.vue";
 import ThemeSwitch from "./ThemeSwitch.vue";
+import VersionManagementModal from './VersionManagementModal.vue'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 import { usePersistentRecord } from '@/composables/usePersistentRecord'
 import RouteLinkItem from '@/components/common/RouteLinkItem.vue'
@@ -29,6 +30,10 @@ const selectedKey = computed(() => {
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 const currentUsername = computed(() => getStoredUsername());
 const isVersionPreview = import.meta.env.VITE_HERMES_PREVIEW === '1';
+const isDesktopShell = computed(() => {
+  return typeof window !== 'undefined' &&
+    (window as typeof window & { hermesDesktop?: { isDesktop?: boolean } }).hermesDesktop?.isDesktop === true;
+});
 
 function isNavActive(...names: string[]) {
   return names.includes(selectedKey.value);
@@ -76,9 +81,14 @@ function handleLogout() {
 
 // Changelog
 const showChangelog = ref(false);
+const showVersionManagement = ref(false);
 
 function openChangelog() {
   showChangelog.value = true;
+}
+
+function openVersionManagement() {
+  showVersionManagement.value = true;
 }
 </script>
 
@@ -377,6 +387,9 @@ function openChangelog() {
         <span class="version-text" @click="openChangelog">Studio v{{ appStore.serverVersion || "0.1.0" }}</span>
         <ThemeSwitch />
       </div>
+      <NButton v-if="isDesktopShell" type="primary" size="tiny" block class="update-btn" @click="openVersionManagement">
+        {{ t('sidebar.versionManagement') }}
+      </NButton>
       <NButton v-if="appStore.clientOutdated" type="warning" size="tiny" block class="update-btn" @click="handleReloadClient">
         {{ t('sidebar.reloadClientVersion', { version: appStore.serverVersion }) }}
       </NButton>
@@ -399,6 +412,7 @@ function openChangelog() {
         </div>
       </div>
     </NModal>
+    <VersionManagementModal v-if="isDesktopShell" v-model:show="showVersionManagement" />
   </aside>
 </template>
 
