@@ -1960,6 +1960,22 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_6_13_1: 'Alibaba Coding Plan now includes the qwen3.7-plus model preset',
+    new_0_6_13_2: 'File handling is safer with literal-dot path validation and malformed skill-import filename rejection',
+    new_0_6_13_3: 'Chat is more stable on mobile and in browsers without speech synthesis support',
+    new_0_6_13_4: 'Agent failures now preserve the bridge error tail, and Claude Code root-permission launches are more reliable',
+    new_0_6_13_5: 'Desktop updates are more reliable: Windows upgrades close stale Hermes Studio processes, Cloudflare is checked first, and GitHub remains the fallback feed',
+    new_0_6_13_6: 'Release automation now keeps Web UI and Docker releases out of GitHub Latest while full desktop releases are manually promoted to Latest',
+    new_0_6_12_1: 'Coding Agent is now a fuller chat experience with dedicated sessions, clearer history, preserved tool/final output, and better chat-state recovery',
+    new_0_6_12_2: 'Claude Code and Codex launch more reliably from the desktop app on Windows, with corrected command resolution and readable failure messages',
+    new_0_6_12_3: 'Coding Agent reasoning, queue status, and error states are easier to follow with stored reasoning content and a nonblocking queue overlay',
+    new_0_6_12_4: 'Desktop runtime version management supports Coding Agent workflows with active-version switching, website version manifests, release packaging support, and desktop-only visibility',
+    new_0_6_12_5: 'Chat now supports per-session reasoning effort controls for compatible models while hiding that control for coding agents where it does not apply',
+    new_0_6_12_6: 'Group chat is more reliable with fixed mention positioning after resize and uploads that follow the active Profile',
+    new_0_6_12_7: 'Files, downloads, and Markdown previews are steadier with aligned file columns, raw percent download URL handling, and inline rendering for local audio links',
+    new_0_6_12_8: 'Remote device pairing is easier with manual pairing and LAN HTTP fallback support',
+    new_0_6_12_9: 'Chat rendering polish fixes highlighted code blocks that could overflow the screen, including long uninterrupted tokens, while diff blocks keep line-aligned scrolling',
+    new_0_6_12_10: 'Additional frontend polish includes remote device pairing fallback, clearer sidebar labels, refined logout identity text, and removal of an unwired Busy Input option',
     new_0_6_11_1: 'LAN device discovery now includes pairing approvals, request history, duplicate request handling, status sync, and cleanup when device access is revoked',
     new_0_6_11_2: 'LAN peer access is available through MCP with bundled MCP startup, command shims, reconnecting peer sockets, local connection listing, and capped terminal sessions',
     new_0_6_11_3: 'Unified backend TTS synthesis and MiMo voice cloning settings are now available, including playback support before saving settings',
