@@ -219,6 +219,7 @@ export default {
       gettingStarted: 'Getting Started',
       configuration: 'Configuration',
       features: 'Features',
+      hermesStudioManual: 'Client Manual',
       platforms: 'Platform Guides',
       api: 'API Reference',
     },
@@ -283,11 +284,13 @@ export default {
           ['HERMES_OPENROUTER_APP_REFERER', 'OpenRouter attribution referer sent by bridge runs'],
           ['HERMES_OPENROUTER_APP_TITLE', 'OpenRouter attribution title sent by bridge runs'],
           ['HERMES_OPENROUTER_APP_CATEGORIES', 'OpenRouter attribution categories sent by bridge runs'],
-          ['HERMES_WEB_UI_MANAGED_GATEWAY', 'Force managed legacy gateway process handling'],
+          ['HERMES_WEB_UI_MANAGED_GATEWAY', 'Force Web UI-managed Hermes gateway process handling'],
           ['HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART', 'Skip startup gateway checks/autostart for dashboard-only deployments where another service owns Hermes gateway lifecycle'],
           ['HERMES_WEB_UI_DISABLE_SKILL_INJECTION', 'Skip startup bundled skill injection when skills are managed outside Hermes Web UI. Enabled injection only updates Web UI-managed or identical bundled copies; local edits are skipped'],
           ['HERMES_WEB_UI_STOP_GATEWAYS_ON_SHUTDOWN', 'Controls whether Hermes Studio shutdown also stops managed gateway processes'],
-          ['GATEWAY_HOST', 'Default gateway host written into profile config for legacy gateway compatibility'],
+          ['HERMES_GATEWAY_URL / GATEWAY_URL', 'Explicit Hermes gateway upstream URL for proxy routes'],
+          ['GATEWAY_HOST', 'Default Hermes gateway upstream host for proxy routes'],
+          ['GATEWAY_PORT', 'Default Hermes gateway upstream port for proxy routes'],
           ['HERMES_WEB_UI_PREVIEW_REPO', 'GitHub repository used by Version Preview'],
           ['HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_TRANSPORT', 'Version Preview broker endpoint transport. Set tcp to use loopback TCP for Preview on macOS/Linux; when unset, Preview follows HERMES_AGENT_BRIDGE_WORKER_TRANSPORT=tcp'],
           ['HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT', 'Directly overrides the Version Preview broker endpoint for deployments that need a fully custom Preview bridge address'],
@@ -344,6 +347,39 @@ export default {
         content: 'Track token usage (input/output), estimated costs, cache hit rates, session counts, and model distribution. View 30-day daily trends with interactive charts.',
       },
     },
+    hermesStudioManual: {
+      title: 'Hermes Studio Client Manual',
+      intro: 'This page publishes the complete Hermes Studio 0.6.12 client operations manual. The full manual is currently authored in Chinese and covers day-to-day usage, configuration, operations, acceptance review, internal training, visible navigation, dialogs, status pages, key actions, common workflows, and risk notes.',
+      open: {
+        title: 'Open the full manual',
+        content: 'The uploaded manual preserves the original HTML layout, annotated screenshots, tables, and PDF export. Use the HTML version for online browsing and the PDF version for offline review, archiving, or training distribution.',
+        links: [
+          {
+            label: 'Open the Chinese HTML manual',
+            href: '/docs/hermes-studio-0.6.12-full-cn/index.html',
+            description: 'Includes the full table of contents, annotated screenshots, workflow sections, tables, and operational notes.',
+          },
+          {
+            label: 'Download the Chinese PDF manual',
+            href: '/docs/hermes-studio-0.6.12-full-cn/hermes-studio-0.6.12-full-cn.pdf',
+            description: 'Best for offline reading, archival use, printing, and training handouts.',
+          },
+        ],
+      },
+      scope: {
+        title: 'Scope',
+        rows: [
+          ['Version', 'Hermes Studio 0.6.12 client operations manual'],
+          ['Language', 'Full manual in Chinese, with bilingual website entry copy'],
+          ['Coverage', 'Login, chat, history, memory, skills, plugins, files, terminal, jobs, group chat, Kanban, usage, logs, MCP, platform integrations, devices, settings, backup, security, and troubleshooting'],
+          ['Audience', 'Individual users, administrators, support teams, acceptance reviewers, and internal training teams'],
+        ],
+      },
+      maintenance: {
+        title: 'Maintenance note',
+        content: 'When the website, reference docs, Hermes agent docs, and the current client UI differ, the manual treats the currently visible client interface as the operational source of truth. For future releases, replace the uploaded HTML/PDF assets and update the version scope on this page.',
+      },
+    },
     platforms: {
       title: 'Platform Guides',
       intro: 'Configure messaging platform integrations from the Channels settings page.',
@@ -389,7 +425,7 @@ export default {
       },
       proxy: {
         title: 'Chat Streaming',
-        content: 'Chat runs use the /chat-run Socket.IO namespace and the Hermes agent bridge. Legacy gateway proxy routes are kept only for compatibility where applicable.',
+        content: 'Chat runs use the /chat-run Socket.IO namespace and the Hermes agent bridge. Gateway proxy routes are kept only for compatibility where applicable.',
       },
       auth: {
         title: 'Authentication',

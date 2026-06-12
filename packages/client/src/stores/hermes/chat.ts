@@ -8,6 +8,7 @@ import { useAppStore } from './app'
 import { useProfilesStore } from './profiles'
 import { useSettingsStore } from './settings'
 import { primeCompletionSound, playCompletionSound } from '@/utils/completion-sound'
+import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
 
 // Re-export ContentBlock for convenience
@@ -56,6 +57,7 @@ export interface PendingApproval {
   description: string
   choices: Array<'once' | 'session' | 'always' | 'deny'>
   allowPermanent: boolean
+  isMemoryWrite: boolean
   requestedAt: number
 }
 
@@ -1510,6 +1512,13 @@ export const useChatStore = defineStore('chat', () => {
     const sid = evt.session_id
     const approvalId = (evt as any).approval_id as string | undefined
     if (!sid || !approvalId) return
+    const description = String((evt as any).description || '')
+    const normalizedDescription = description.trim().toLowerCase().replace(/\s+/g, ' ')
+    const isMemoryWrite = !Boolean((evt as any).allow_permanent) && (
+      normalizedDescription === 'save to memory' ||
+      normalizedDescription.startsWith('save to memory:') ||
+      normalizedDescription.startsWith('save to memory?')
+    )
     const rawChoices = Array.isArray((evt as any).choices) ? (evt as any).choices : ['once', 'session', 'deny']
     const choices = rawChoices
       .filter((choice: unknown): choice is PendingApproval['choices'][number] =>
@@ -1518,9 +1527,10 @@ export const useChatStore = defineStore('chat', () => {
       sessionId: sid,
       approvalId,
       command: String((evt as any).command || ''),
-      description: String((evt as any).description || ''),
-      choices: choices.length ? choices : ['once', 'session', 'deny'],
+      description,
+      choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
       allowPermanent: Boolean((evt as any).allow_permanent),
+      isMemoryWrite,
       requestedAt: Date.now(),
     })
     pendingApprovals.value = new Map(pendingApprovals.value)
@@ -1635,6 +1645,47 @@ export const useChatStore = defineStore('chat', () => {
     if (useSettingsStore().display.bell_on_complete) {
       void playCompletionSound()
     }
+  }
+
+  function truncateNotificationText(value: string, maxLength: number): string {
+    const normalized = value.replace(/\s+/g, ' ').trim()
+    if (normalized.length <= maxLength) return normalized
+    return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+  }
+
+  function completionNotificationAgent(session: Session): { icon: string } {
+    const codingAgentId = session.codingAgentId || (session.agent === 'codex' ? 'codex' : session.agent === 'claude' ? 'claude-code' : undefined)
+    if (codingAgentId === 'codex') {
+      return { icon: '/coding-agents/codex-openai.png' }
+    }
+    if (codingAgentId === 'claude-code') {
+      return { icon: '/coding-agents/claude-code.svg' }
+    }
+    return { icon: '/coding-agents/hermes.png' }
+  }
+
+  function completionNotificationBody(session: Session, message?: Message): string {
+    const preview = message?.content || session.title || 'Message complete.'
+    return truncateNotificationText(preview, 140)
+  }
+
+  function showCompletionNotificationIfEnabled(sessionId: string, messageId?: string | null) {
+    const settingsStore = useSettingsStore()
+    if (!settingsStore.display.notify_on_complete) return
+
+    const session = sessions.value.find(s => s.id === sessionId)
+    if (!session) return
+    const message = messageId
+      ? session.messages.find(m => m.id === messageId)
+      : [...session.messages].reverse().find(m => m.role === 'assistant')
+
+    const agent = completionNotificationAgent(session)
+    void showCompletionNotification({
+      title: truncateNotificationText(session.title || 'Hermes', 80),
+      body: completionNotificationBody(session, message),
+      icon: agent.icon,
+      tag: `hermes-complete-${sessionId}-${message?.id || Date.now()}`,
+    })
   }
 
   async function sendMessage(content: string, attachments?: Attachment[]) {
@@ -2336,6 +2387,7 @@ export const useChatStore = defineStore('chat', () => {
                 })
               } else {
                 playCompletionBellIfEnabled()
+                showCompletionNotificationIfEnabled(sid, completedAssistantMessageId)
               }
 
               // 自动播放语音
@@ -2886,6 +2938,7 @@ export const useChatStore = defineStore('chat', () => {
             })
           } else {
             playCompletionBellIfEnabled()
+            showCompletionNotificationIfEnabled(sid, completedAssistantMessageId)
           }
 
           // Auto-play speech for every completed assistant message

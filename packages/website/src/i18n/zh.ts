@@ -219,6 +219,7 @@ export default {
       gettingStarted: '快速开始',
       configuration: '配置说明',
       features: '功能详解',
+      hermesStudioManual: '客户端手册',
       platforms: '平台接入',
       api: 'API 参考',
     },
@@ -283,11 +284,13 @@ export default {
           ['HERMES_OPENROUTER_APP_REFERER', 'bridge 运行发送给 OpenRouter 的 attribution referer'],
           ['HERMES_OPENROUTER_APP_TITLE', 'bridge 运行发送给 OpenRouter 的 attribution title'],
           ['HERMES_OPENROUTER_APP_CATEGORIES', 'bridge 运行发送给 OpenRouter 的 attribution categories'],
-          ['HERMES_WEB_UI_MANAGED_GATEWAY', '强制启用旧 gateway 进程托管'],
+          ['HERMES_WEB_UI_MANAGED_GATEWAY', '强制启用 Web UI 托管的 Hermes gateway 进程'],
           ['HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART', '跳过启动时的 gateway 检查/自动启动；适用于由其它服务管理 Hermes gateway 的 dashboard-only 部署'],
           ['HERMES_WEB_UI_DISABLE_SKILL_INJECTION', '跳过启动时的内置 skill 注入；适用于由 Hermes Web UI 外部管理 skills 的部署。启用注入时只更新 Web UI 管理或完全相同的内置副本，本地修改会跳过'],
           ['HERMES_WEB_UI_STOP_GATEWAYS_ON_SHUTDOWN', 'Hermes Studio 关闭时是否同时停止托管的 gateway 进程'],
-          ['GATEWAY_HOST', '旧 gateway 兼容配置中写入 profile 的默认 gateway host'],
+          ['HERMES_GATEWAY_URL / GATEWAY_URL', 'proxy 路由使用的 Hermes gateway upstream URL'],
+          ['GATEWAY_HOST', 'proxy 路由使用的默认 Hermes gateway upstream host'],
+          ['GATEWAY_PORT', 'proxy 路由使用的默认 Hermes gateway upstream port'],
           ['HERMES_WEB_UI_PREVIEW_REPO', 'Version Preview 使用的 GitHub 仓库'],
           ['HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_TRANSPORT', 'Version Preview 的 broker endpoint transport。设为 tcp 可让预览环境在 macOS/Linux 上也使用 loopback TCP；未设置时会跟随 HERMES_AGENT_BRIDGE_WORKER_TRANSPORT=tcp'],
           ['HERMES_WEB_UI_PREVIEW_AGENT_BRIDGE_ENDPOINT', '直接覆盖 Version Preview 的 broker endpoint；用于需要完全自定义预览 bridge 地址的部署'],
@@ -344,6 +347,39 @@ export default {
         content: '追踪 Token 用量（输入/输出）、预估费用、缓存命中率、会话数和模型分布。查看 30 天日趋势交互图表。',
       },
     },
+    hermesStudioManual: {
+      title: 'Hermes Studio 客户端完整操作手册',
+      intro: '这份手册面向 Hermes Studio 桌面客户端和 Web 界面的使用、配置、运维、验收与内部培训场景，覆盖当前客户端可见导航、设置、弹窗、状态页、关键按钮、常见流程和风险提示。',
+      open: {
+        title: '打开完整手册',
+        content: '完整手册保留原始 HTML 排版、截图标注和 PDF 版本。HTML 版本适合在线浏览，PDF 版本适合归档、打印和离线分发。',
+        links: [
+          {
+            label: '在线打开中文 HTML 手册',
+            href: '/docs/hermes-studio-0.6.12-full-cn/index.html',
+            description: '包含目录、截图、表格、风险提示和完整操作章节。',
+          },
+          {
+            label: '下载中文 PDF 手册',
+            href: '/docs/hermes-studio-0.6.12-full-cn/hermes-studio-0.6.12-full-cn.pdf',
+            description: '适合离线阅读、归档和培训材料分发。',
+          },
+        ],
+      },
+      scope: {
+        title: '适用范围',
+        rows: [
+          ['适用版本', 'Hermes Studio 0.6.12 客户端操作手册'],
+          ['文档语言', '中文完整手册；官网提供中英文入口说明'],
+          ['覆盖内容', '登录、聊天、历史、记忆、技能、插件、文件、终端、任务、群聊、看板、用量、日志、MCP、平台集成、设备、设置、备份、安全和故障排除'],
+          ['推荐读者', '个人用户、管理员、技术支持、交付验收人员和内部培训对象'],
+        ],
+      },
+      maintenance: {
+        title: '维护说明',
+        content: '当官网、说明文档、Hermes 智能体文档与当前客户端界面存在差异时，操作步骤以当前客户端实际可见界面为准。后续版本更新时，请同步替换 HTML/PDF 资源并更新本页的适用版本说明。',
+      },
+    },
     platforms: {
       title: '平台接入',
       intro: '从通道设置页面配置消息平台集成。',
@@ -389,7 +425,7 @@ export default {
       },
       proxy: {
         title: '聊天流式通信',
-        content: '聊天运行使用 /chat-run Socket.IO 命名空间和 Hermes agent bridge。旧 gateway proxy 路由仅在兼容场景下保留。',
+        content: '聊天运行使用 /chat-run Socket.IO 命名空间和 Hermes agent bridge。gateway proxy 路由仅在兼容场景下保留。',
       },
       auth: {
         title: '认证',
