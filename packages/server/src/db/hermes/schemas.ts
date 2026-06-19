@@ -40,6 +40,8 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   model: 'TEXT NOT NULL DEFAULT \'\'',
   provider: 'TEXT NOT NULL DEFAULT \'\'',
   title: 'TEXT',
+  parent_session_id: 'TEXT',
+  fork_point_message_id: 'TEXT',
   started_at: 'INTEGER NOT NULL',
   ended_at: 'INTEGER',
   end_reason: 'TEXT',
@@ -219,6 +221,15 @@ export const TTS_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
 export const TTS_PROVIDER_SETTINGS_INDEXES = {
   idx_tts_provider_settings_user: 'CREATE INDEX IF NOT EXISTS idx_tts_provider_settings_user ON tts_provider_settings(user_id)',
   idx_tts_provider_settings_user_provider: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_tts_provider_settings_user_provider ON tts_provider_settings(user_id, provider)',
+}
+
+export const TTS_USER_SETTINGS_TABLE = 'tts_user_settings'
+
+export const TTS_USER_SETTINGS_SCHEMA: Record<string, string> = {
+  user_id: 'INTEGER PRIMARY KEY',
+  active_provider: "TEXT NOT NULL DEFAULT 'edge'",
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+  updated_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
 }
 
 // ============================================================================
@@ -511,6 +522,7 @@ export function initAllHermesTables(): void {
     syncTable(TTS_PROVIDER_SETTINGS_TABLE, TTS_PROVIDER_SETTINGS_SCHEMA, {
       indexes: TTS_PROVIDER_SETTINGS_INDEXES,
     })
+    syncTable(TTS_USER_SETTINGS_TABLE, TTS_USER_SETTINGS_SCHEMA)
 
     // Group chat - basic tables
     syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)

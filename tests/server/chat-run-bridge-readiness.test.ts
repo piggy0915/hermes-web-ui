@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const handleBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const resumeBridgeRunMock = vi.hoisted(() => vi.fn(async () => {}))
-const handleApiRunMock = vi.hoisted(() => vi.fn(async () => {}))
+const handleCodingAgentRunMock = vi.hoisted(() => vi.fn(async () => {}))
 const loadSessionStateFromDbMock = vi.hoisted(() => vi.fn())
 const ensureReadyMock = vi.hoisted(() => vi.fn())
 const getRuntimeStateMock = vi.hoisted(() => vi.fn())
@@ -19,10 +19,13 @@ vi.mock('../../packages/server/src/services/hermes/run-chat/handle-bridge-run', 
   resumeBridgeRun: resumeBridgeRunMock,
 }))
 
-vi.mock('../../packages/server/src/services/hermes/run-chat/handle-api-run', () => ({
-  handleApiRun: handleApiRunMock,
+vi.mock('../../packages/server/src/services/hermes/run-chat/load-state', () => ({
   loadSessionStateFromDb: loadSessionStateFromDbMock,
   resolveRunSource: vi.fn((source?: string) => source || 'cli'),
+}))
+
+vi.mock('../../packages/server/src/services/hermes/run-chat/handle-coding-agent-run', () => ({
+  handleCodingAgentRun: handleCodingAgentRunMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/session-command', () => ({
@@ -52,6 +55,7 @@ vi.mock('../../packages/server/src/lib/llm-prompt', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
+  getSessionDetail: vi.fn(() => null),
 }))
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
@@ -105,7 +109,7 @@ describe('ensureBridgeReadyForChatRun', () => {
     bridgeMock.statusIfLoaded.mockReset()
     handleBridgeRunMock.mockReset()
     resumeBridgeRunMock.mockReset()
-    handleApiRunMock.mockReset()
+    handleCodingAgentRunMock.mockReset()
     loadSessionStateFromDbMock.mockReset()
     getSessionMock.mockReset()
     getSessionMock.mockImplementation((sessionId?: string) => sessionId
@@ -176,7 +180,7 @@ describe('ChatRunSocket bridge readiness gating', () => {
     bridgeMock.statusIfLoaded.mockReset()
     handleBridgeRunMock.mockReset()
     resumeBridgeRunMock.mockReset()
-    handleApiRunMock.mockReset()
+    handleCodingAgentRunMock.mockReset()
     loadSessionStateFromDbMock.mockReset()
     ensureReadyMock.mockResolvedValue({
       reachable: true,
@@ -220,7 +224,7 @@ describe('ChatRunSocket bridge readiness gating', () => {
     }))
   })
 
-  it('does not gate runs when resolveRunSource resolves api_server in tests', async () => {
+  it('routes legacy api_server runs through the bridge path', async () => {
     const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
     const { handlers, io, socket } = makeServerHarness()
     const server = new ChatRunSocket(io as any)
@@ -228,10 +232,64 @@ describe('ChatRunSocket bridge readiness gating', () => {
     ;(server as any).onConnection(socket)
     await handlers.get('run')?.({ input: 'hello', session_id: 'session-1', source: 'api_server' })
 
-    expect(ensureReadyMock).not.toHaveBeenCalled()
-    expect(handleApiRunMock).toHaveBeenCalledTimes(1)
-    expect(handleBridgeRunMock).not.toHaveBeenCalled()
+    expect(ensureReadyMock).toHaveBeenCalledTimes(1)
+    expect(handleBridgeRunMock).toHaveBeenCalledTimes(1)
+    expect(handleBridgeRunMock.mock.calls[0][2]).toEqual(expect.objectContaining({
+      input: 'hello',
+      source: 'api_server',
+    }))
     expect(socket.emit).not.toHaveBeenCalledWith('run.failed', expect.anything())
+  })
+
+  it('routes global-agent Hermes runs through the bridge run path while preserving session source', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    ;(server as any).onConnection(socket)
+    await handlers.get('run')?.({
+      input: 'hello',
+      session_id: 'session-1',
+      source: 'cli',
+      session_source: 'global_agent',
+    })
+
+    expect(ensureReadyMock).toHaveBeenCalledTimes(1)
+    expect(handleBridgeRunMock).toHaveBeenCalledTimes(1)
+    expect(handleBridgeRunMock.mock.calls[0][2]).toEqual(expect.objectContaining({
+      source: 'cli',
+      session_source: 'global_agent',
+    }))
+    expect(socket.emit).not.toHaveBeenCalledWith('run.failed', expect.anything())
+  })
+
+  it('routes global coding-agent runs through the coding-agent path while preserving session source', async () => {
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    ;(server as any).onConnection(socket)
+    await handlers.get('run')?.({
+      input: 'hello',
+      session_id: 'session-1',
+      source: 'coding_agent',
+      session_source: 'global_agent',
+      coding_agent_id: 'codex',
+    })
+
+    expect(ensureReadyMock).not.toHaveBeenCalled()
+    expect(handleCodingAgentRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      socket,
+      expect.objectContaining({
+        source: 'coding_agent',
+        session_source: 'global_agent',
+        coding_agent_id: 'codex',
+      }),
+      'default',
+      expect.any(Map),
+    )
+    expect(handleBridgeRunMock).not.toHaveBeenCalled()
   })
 
   it('continues with remaining queued bridge runs when readiness fails before a dequeued run starts', async () => {
@@ -467,6 +525,57 @@ describe('ChatRunSocket bridge readiness gating', () => {
     expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
       session_id: 'session-1',
       isWorking: false,
+      events: [],
+    }))
+  })
+
+  it('reattaches global-agent bridge runs with the global source preserved', async () => {
+    getSessionMock.mockImplementation((sessionId?: string) => sessionId
+      ? { id: sessionId, profile: 'default', source: 'global_agent', model: 'gpt-test', provider: 'openai' }
+      : undefined)
+    bridgeMock.statusIfLoaded.mockResolvedValueOnce({
+      ok: true,
+      exists: true,
+      running: true,
+      loaded: true,
+      current_run_id: 'run-global',
+    })
+    loadSessionStateFromDbMock.mockResolvedValueOnce({
+      messages: [],
+      isWorking: false,
+      isAborting: false,
+      runId: undefined,
+      activeRunMarker: undefined,
+      profile: 'default',
+      source: 'global_agent',
+      events: [],
+      queue: [],
+    })
+    const { ChatRunSocket } = await import('../../packages/server/src/services/hermes/run-chat')
+    const { emitted, handlers, io, socket } = makeServerHarness()
+    const server = new ChatRunSocket(io as any)
+
+    ;(server as any).onConnection(socket)
+    await handlers.get('resume')?.({ session_id: 'session-1' })
+
+    expect(ensureReadyMock).not.toHaveBeenCalled()
+    expect(bridgeMock.statusIfLoaded).toHaveBeenCalledWith('session-1', 'default', { timeoutMs: 1000 })
+    expect(resumeBridgeRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      socket,
+      expect.objectContaining({
+        sessionId: 'session-1',
+        runId: 'run-global',
+        source: 'global_agent',
+      }),
+      expect.any(Map),
+      bridgeMock,
+      expect.any(Function),
+    )
+    expect(emitted.some(({ event }) => event === 'run.reattach_failed')).toBe(false)
+    expect(socket.emit).toHaveBeenCalledWith('resumed', expect.objectContaining({
+      session_id: 'session-1',
+      isWorking: true,
       events: [],
     }))
   })

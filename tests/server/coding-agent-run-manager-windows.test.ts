@@ -80,7 +80,7 @@ describe('coding agent Windows process launch', () => {
       state: { messages: [], isWorking: false, events: [], queue: [] },
     })
 
-    manager.send('chat-session-1', 'test')
+    manager.send('chat-session-1', 'test', { systemPrompt: 'system prompt\nsecond line' })
 
     expect(testState.spawnCalls[0]).toMatchObject({
       command: 'cmd.exe',
@@ -88,6 +88,10 @@ describe('coding agent Windows process launch', () => {
     })
     expect(testState.spawnCalls[0].args[3]).toContain('C:\\Users\\Administrator\\AppData\\Roaming\\npm\\claude.cmd')
     expect(testState.spawnCalls[0].args[3]).toContain('^"--settings^"')
+    expect(testState.spawnCalls[0].args[3]).toContain('^"--append-system-prompt^"')
+    expect(testState.spawnCalls[0].args[3]).toContain('^"system^ prompt^ /^ second^ line^"')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('\n')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('\r')
     expect(testState.spawnCalls[0].args[3]).toContain('^"test^"')
     expect(testState.spawnCalls[0].options).toMatchObject({
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -123,7 +127,7 @@ describe('coding agent Windows process launch', () => {
       state: { messages: [], isWorking: false, events: [], queue: [] },
     })
 
-    manager.send('chat-session-codex-1', 'test')
+    manager.send('chat-session-codex-1', 'test', { systemPrompt: 'system prompt\nsecond line' })
 
     expect(testState.spawnCalls[0]).toMatchObject({
       command: 'cmd.exe',
@@ -133,8 +137,13 @@ describe('coding agent Windows process launch', () => {
     expect(testState.spawnCalls[0].args[3]).toContain('^"exec^"')
     expect(testState.spawnCalls[0].args[3]).toContain('^"-c^"')
     expect(testState.spawnCalls[0].args[3]).toContain('model_reasoning_summary=\\^"auto\\^"')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('developer_instructions=')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('system^ prompt^ /^ second^ line')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('\n')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('\r')
     expect(testState.spawnCalls[0].args[3]).toContain('^"--model^"')
     expect(testState.spawnCalls[0].args[3]).toContain('^"test^"')
+    expect(testState.spawnCalls[0].args[3]).not.toContain('system^ prompt\r\n\r\ntest')
     expect(testState.spawnCalls[0].options).toMatchObject({
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsVerbatimArguments: true,

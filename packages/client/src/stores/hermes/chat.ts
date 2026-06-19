@@ -1,7 +1,9 @@
-import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
+import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
 import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName } from '@/api/client'
+import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
+import type { ProviderApiMode } from '@/api/hermes/system'
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useAppStore } from './app'
@@ -10,6 +12,8 @@ import { useSettingsStore } from './settings'
 import { primeCompletionSound, playCompletionSound } from '@/utils/completion-sound'
 import { showCompletionNotification } from '@/utils/completion-notification'
 import { detectThinkingBoundary } from '@/utils/thinking-parser'
+import { isKnownBridgeSessionCommand } from '@/utils/hermes/bridge-session-commands'
+import { responseErrorMessage } from '@/utils/http-error'
 
 // Re-export ContentBlock for convenience
 export type ContentBlock = ContentBlockImport
@@ -46,7 +50,7 @@ export interface Message {
   // 不含 <think> 包裹标签；内容自身可以为多段纯文本。
   reasoning?: string
   queued?: boolean
-  systemType?: 'command' | 'error'
+  systemType?: 'command' | 'error' | 'fork-divider'
   commandAction?: string
   commandData?: Record<string, unknown>
   finishReason?: string | null
@@ -90,7 +94,7 @@ export interface Session {
   provider?: string
   baseUrl?: string
   apiKey?: string
-  apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
+  apiMode?: ProviderApiMode
   messageCount?: number
   messageTotal?: number
   loadedMessageCount?: number
@@ -100,6 +104,11 @@ export interface Session {
   outputTokens?: number
   contextTokens?: number
   endedAt?: number | null
+  parentSessionId?: string | null
+  forkPointMessageId?: string | null
+  parentTitle?: string | null
+  parentLastMessage?: string | null
+  parentLastMessageRole?: string | null
   lastActiveAt?: number
   workspace?: string | null
   /** Per-session reasoning effort override.
@@ -174,7 +183,7 @@ async function uploadFiles(attachments: Attachment[]): Promise<{ name: string; p
     body: formData,
     headers,
   })
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`)
+  if (!res.ok) throw new Error(await responseErrorMessage(res, 'Upload failed'))
   const data = await res.json() as { files: { name: string; path: string }[] }
   return data.files
 }
@@ -431,12 +440,45 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
   return result
 }
 
+function sessionActivitySeconds(s: SessionSummary): number {
+  return Math.max(
+    s.started_at || 0,
+    s.ended_at || 0,
+    s.last_active || 0,
+  )
+}
+
+function lastVisibleMessage(messages?: Message[] | null): Message | null {
+  if (!messages?.length) return null
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.role !== 'user' && message.role !== 'assistant') continue
+    if (!String(message.content || '').trim()) continue
+    return message
+  }
+  return null
+}
+
+function lastVisibleMessageContent(messages?: Message[] | null): string | null {
+  const message = lastVisibleMessage(messages)
+  if (!message) return null
+  const content = String(message.content || '').replace(/\s+/g, ' ').trim()
+  return content.length > 280 ? `${content.slice(0, 277)}...` : content
+}
+
+function lastVisibleMessageRole(messages?: Message[] | null): string | null {
+  return lastVisibleMessage(messages)?.role || null
+}
+
 function mapHermesSession(s: SessionSummary): Session {
-  const codingAgentMode = s.source === 'coding_agent'
+  const isCodingAgentSession = s.source === 'coding_agent' || s.agent === 'claude' || s.agent === 'codex'
+  const codingAgentId = s.agent === 'codex' ? 'codex' : s.agent === 'claude' ? 'claude-code' : undefined
+  const codingAgentMode = isCodingAgentSession
     ? (s.agent_mode === 'global' || s.agent_mode === 'scoped'
         ? s.agent_mode
         : s.provider === 'global' ? 'global' : 'scoped')
     : undefined
+  const activitySeconds = sessionActivitySeconds(s)
   return {
     id: s.id,
     profile: s.profile || 'default',
@@ -445,10 +487,11 @@ function mapHermesSession(s: SessionSummary): Session {
     agent: s.agent || undefined,
     agentSessionId: s.agent_session_id || undefined,
     agentNativeSessionId: s.agent_native_session_id || undefined,
+    codingAgentId,
     codingAgentMode,
     messages: [],
     createdAt: Math.round(s.started_at * 1000),
-    updatedAt: Math.round((s.last_active || s.ended_at || s.started_at) * 1000),
+    updatedAt: Math.round(activitySeconds * 1000),
     model: s.model,
     provider: s.provider || (s as any).billing_provider || '',
     messageCount: s.message_count,
@@ -458,12 +501,19 @@ function mapHermesSession(s: SessionSummary): Session {
     inputTokens: s.input_tokens,
     outputTokens: s.output_tokens,
     endedAt: s.ended_at != null ? Math.round(s.ended_at * 1000) : null,
+    parentSessionId: s.parent_session_id || null,
+    forkPointMessageId: (s as any).fork_point_message_id != null ? String((s as any).fork_point_message_id) : null,
+    parentTitle: s.parent_title || null,
+    parentLastMessage: s.parent_last_message || null,
+    parentLastMessageRole: s.parent_last_message_role || null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
     workspace: s.workspace || null,
   }
 }
 
 const STORAGE_KEY_PREFIX = 'hermes_active_session_'
+type ChatRuntimeMode = 'default' | 'global_agent'
+let activeRuntimeMode: ChatRuntimeMode = 'default'
 const LEGACY_STORAGE_KEY = 'hermes_active_session'
 
 // 获取当前 profile 名称，用于隔离缓存。
@@ -477,8 +527,20 @@ function getProfileName(): string {
   }
 }
 
-function storageKey(): string { return STORAGE_KEY_PREFIX + getProfileName() }
-function legacyStorageKey(): string | null { return getProfileName() === 'default' ? LEGACY_STORAGE_KEY : null }
+function runtimeStoragePrefix(): string {
+  return activeRuntimeMode === 'global_agent' ? `${STORAGE_KEY_PREFIX}global_agent_` : STORAGE_KEY_PREFIX
+}
+
+function storageKey(): string { return runtimeStoragePrefix() + getProfileName() }
+function legacyStorageKey(): string | null { return activeRuntimeMode === 'default' && getProfileName() === 'default' ? LEGACY_STORAGE_KEY : null }
+
+function isCodingAgentLikeSession(session?: Pick<Session, 'source' | 'agent' | 'codingAgentId'> | null): boolean {
+  return session?.source === 'coding_agent' ||
+    session?.codingAgentId === 'claude-code' ||
+    session?.codingAgentId === 'codex' ||
+    session?.agent === 'claude' ||
+    session?.agent === 'codex'
+}
 
 function isQuotaExceededError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
@@ -550,6 +612,7 @@ function removeItem(key: string) {
 // File objects don't serialize and we only need name/type/size/url for display.
 
 export const useChatStore = defineStore('chat', () => {
+  const runtimeMode = ref<ChatRuntimeMode>(activeRuntimeMode)
   const seenSessionCommandEvents = new WeakSet<RunEvent>()
   const sessions = ref<Session[]>([])
   const activeSessionId = ref<string | null>(null)
@@ -557,6 +620,8 @@ export const useChatStore = defineStore('chat', () => {
   const streamStates = ref<Map<string, { abort: () => void }>>(new Map())
   /** sessionId → server-reported isWorking status */
   const serverWorking = ref<Set<string>>(new Set())
+  /** sessionIds with a terminal /fork command submitted but not settled yet */
+  const pendingForkCommands = ref<Set<string>>(new Set())
   /** Sessions that completed while the user was viewing another session. */
   const completedUnreadSessions = ref<Set<string>>(new Set())
   const sessionProfileFilter = ref<string | null>(null)
@@ -589,10 +654,50 @@ export const useChatStore = defineStore('chat', () => {
     if (sid == null) return false
     return streamStates.value.has(sid) || serverWorking.value.has(sid)
   })
+  const isForkPending = computed(() => {
+    const sid = activeSessionId.value
+    return sid != null && pendingForkCommands.value.has(sid)
+  })
   const isLoadingSessions = ref(false)
   const sessionsLoaded = ref(false)
   const isLoadingMessages = ref(false)
   const isRunActive = computed(() => isStreaming.value)
+
+  async function fetchRuntimeSessions(profile?: string | null): Promise<SessionSummary[]> {
+    const scopedProfile = profile || undefined
+    if (runtimeMode.value === 'global_agent') return fetchSessions('global_agent', undefined, scopedProfile)
+
+    const [localSessions, globalSessions] = await Promise.all([
+      fetchSessions(undefined, undefined, scopedProfile),
+      fetchSessions('global_agent', undefined, scopedProfile),
+    ])
+    const byId = new Map<string, SessionSummary>()
+    for (const session of [...localSessions, ...globalSessions]) byId.set(session.id, session)
+    return [...byId.values()].sort((a, b) =>
+      sessionActivitySeconds(b) - sessionActivitySeconds(a),
+    )
+  }
+
+  function runtimeTransport(): ChatRunTransport {
+    return runtimeMode.value === 'global_agent' ? 'global-agent' : 'chat-run'
+  }
+
+  function setRuntimeMode(mode: ChatRuntimeMode) {
+    if (runtimeMode.value === mode) return
+    activeRuntimeMode = mode
+    runtimeMode.value = mode
+    sessions.value = []
+    completedUnreadSessions.value = new Set()
+    queueLengths.value = new Map()
+    queuedUserMessages.value = new Map()
+    pendingApprovals.value = new Map()
+    pendingClarifies.value = new Map()
+    streamStates.value = new Map()
+    serverWorking.value = new Set()
+    pendingForkCommands.value = new Set()
+    sessionsLoaded.value = false
+    clearActiveSession()
+  }
 
   // Compression state is scoped per session because sockets can stay joined to
   // background sessions while another chat is active.
@@ -672,7 +777,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
     isLoadingSessions.value = true
     try {
-      const list = await fetchSessions(undefined, undefined, profile || undefined)
+      const list = await fetchRuntimeSessions(profile)
       const fresh = list.map(mapHermesSession)
       // Preserve already-loaded messages for sessions that are still present,
       // so we don't blow away the active session's messages on refresh.
@@ -731,7 +836,7 @@ export const useChatStore = defineStore('chat', () => {
     if (isStreaming.value) return
     if (isLoadingSessions.value) return
     try {
-      const list = await fetchSessions(undefined, undefined, profile ?? sessionProfileFilter.value ?? undefined)
+      const list = await fetchRuntimeSessions(profile ?? sessionProfileFilter.value)
       const incoming = list.map(mapHermesSession)
       const existingById = new Map(sessions.value.map(s => [s.id, s]))
       const incomingIds = new Set(incoming.map(s => s.id))
@@ -808,6 +913,11 @@ export const useChatStore = defineStore('chat', () => {
       target.messageCount = detail.total
       target.hasMoreBefore = detail.hasMore
       if (detail.session.title) target.title = detail.session.title
+      target.parentSessionId = detail.session.parent_session_id || target.parentSessionId || null
+      target.forkPointMessageId = (detail.session as any).fork_point_message_id != null ? String((detail.session as any).fork_point_message_id) : target.forkPointMessageId || null
+      target.parentTitle = detail.session.parent_title || target.parentTitle || null
+      target.parentLastMessage = detail.session.parent_last_message || target.parentLastMessage || null
+      target.parentLastMessageRole = detail.session.parent_last_message_role || target.parentLastMessageRole || null
       return true
     } catch (err) {
       console.error('Failed to refresh active session:', err)
@@ -820,24 +930,24 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent'
     agent?: 'hermes' | 'claude' | 'codex'
     codingAgentId?: 'claude-code' | 'codex'
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
     apiKey?: string
-    apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
+    apiMode?: ProviderApiMode
   } = {}): Session {
-    const source = options.source || 'cli'
+    const source = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
     const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
-    const codingAgentMode = source === 'coding_agent' ? (options.codingAgentMode || 'scoped') : undefined
+    const codingAgentMode = codingAgentId ? (options.codingAgentMode || 'scoped') : undefined
     const session: Session = {
       id: uid(),
       profile: options.profile || useProfilesStore().activeProfileName || 'default',
       title: '',
       source,
-      agent: options.agent || (source === 'coding_agent' ? (codingAgentId === 'codex' ? 'codex' : 'claude') : 'hermes'),
+      agent: options.agent || (codingAgentId ? (codingAgentId === 'codex' ? 'codex' : 'claude') : 'hermes'),
       codingAgentId,
       codingAgentMode,
       messages: [],
@@ -869,7 +979,7 @@ export const useChatStore = defineStore('chat', () => {
     const session: Session = {
       id: `${ts}_${hex}`,
       title: '',
-      source: 'cli',
+      source: runtimeMode.value === 'global_agent' ? 'global_agent' : 'cli',
       agent: 'hermes',
       messages: [],
       createdAt: Date.now(),
@@ -932,6 +1042,11 @@ export const useChatStore = defineStore('chat', () => {
           if (data.inputTokens != null) target.inputTokens = data.inputTokens
           if (data.outputTokens != null) target.outputTokens = data.outputTokens
           if ((data as any).contextTokens != null) target.contextTokens = (data as any).contextTokens
+          target.parentSessionId = (data as any).parentSessionId || target.parentSessionId || null
+          target.forkPointMessageId = (data as any).forkPointMessageId != null ? String((data as any).forkPointMessageId) : target.forkPointMessageId || null
+          target.parentTitle = (data as any).parentTitle || target.parentTitle || null
+          target.parentLastMessage = (data as any).parentLastMessage || target.parentLastMessage || null
+          target.parentLastMessageRole = (data as any).parentLastMessageRole || target.parentLastMessageRole || null
           if (data.messages?.length) {
             target.messages = mapHermesMessages(data.messages as any[])
             target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
@@ -1036,7 +1151,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           }
           resolve()
-        }, activeSession.value?.profile)
+        }, activeSession.value?.profile, runtimeTransport())
       })
     } catch (err) {
       console.error('Failed to load session messages via resume:', err)
@@ -1085,25 +1200,26 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent'
     agent?: 'hermes' | 'claude' | 'codex'
     codingAgentId?: 'claude-code' | 'codex'
     codingAgentMode?: 'global' | 'scoped'
     workspace?: string | null
     baseUrl?: string
     apiKey?: string
-    apiMode?: 'chat_completions' | 'codex_responses' | 'anthropic_messages'
+    apiMode?: ProviderApiMode
   } = {}): Session {
     const appStore = useAppStore()
-    const source = options.source || 'cli'
-    const isGlobalCodingAgent = source === 'coding_agent' && options.codingAgentMode === 'global'
+    const storageSource = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
+    const codingAgentId = options.codingAgentId || (options.agent === 'codex' ? 'codex' : options.agent === 'claude' ? 'claude-code' : undefined)
+    const isGlobalCodingAgent = Boolean(codingAgentId) && options.codingAgentMode === 'global'
     const session = createSession({
       profile: options.profile,
       model: isGlobalCodingAgent ? undefined : options.model || appStore.selectedModel || undefined,
       provider: isGlobalCodingAgent ? '' : options.provider || appStore.selectedProvider || '',
-      source,
+      source: storageSource,
       agent: options.agent,
-      codingAgentId: options.codingAgentId,
+      codingAgentId,
       codingAgentMode: options.codingAgentMode,
       workspace: options.workspace,
       baseUrl: options.baseUrl,
@@ -1293,6 +1409,11 @@ export const useChatStore = defineStore('chat', () => {
     if ((evt as any).started === true && (evt as any).terminal === false) {
       serverWorking.value.add(sid)
     }
+    if ((evt as any).terminal === true) {
+      streamStates.value.delete(sid)
+      serverWorking.value.delete(sid)
+      pendingForkCommands.value.delete(sid)
+    }
 
     if (action === 'clear' && command === 'clear') {
       if (target) target.messages = []
@@ -1337,6 +1458,40 @@ export const useChatStore = defineStore('chat', () => {
         if (m.isStreaming) updateMessage(sid, m.id, { isStreaming: false })
         if (m.role === 'tool' && m.toolStatus === 'running') m.toolStatus = 'error'
       })
+    }
+
+    if (action === 'branch' && (evt as any).ok !== false) {
+      const branch = ((evt as any).branchSession || {}) as Record<string, unknown>
+      const newSessionId = String((evt as any).newSessionId || branch.id || '').trim()
+      if (newSessionId) {
+        const existing = sessions.value.find(s => s.id === newSessionId)
+        if (!existing) {
+          sessions.value.unshift({
+            id: newSessionId,
+            profile: typeof branch.profile === 'string' ? branch.profile : undefined,
+            title: String((evt as any).newSessionTitle || branch.title || 'Branch'),
+            source: typeof branch.source === 'string' ? branch.source : 'cli',
+            messages: [],
+            createdAt: typeof branch.createdAt === 'number' ? branch.createdAt : Date.now(),
+            updatedAt: typeof branch.updatedAt === 'number' ? branch.updatedAt : Date.now(),
+            model: typeof branch.model === 'string' ? branch.model : undefined,
+            provider: typeof branch.provider === 'string' ? branch.provider : undefined,
+            messageCount: typeof branch.messageCount === 'number' ? branch.messageCount : undefined,
+            messageTotal: typeof branch.messageCount === 'number' ? branch.messageCount : undefined,
+            loadedMessageCount: 0,
+            hasMoreBefore: false,
+            parentSessionId: typeof branch.parentSessionId === 'string'
+              ? branch.parentSessionId
+              : typeof (evt as any).parentSessionId === 'string' ? (evt as any).parentSessionId : sid,
+            forkPointMessageId: branch.forkPointMessageId != null ? String(branch.forkPointMessageId) : null,
+            parentTitle: typeof branch.parentTitle === 'string' ? branch.parentTitle : target?.title || null,
+            parentLastMessage: typeof branch.parentLastMessage === 'string' ? branch.parentLastMessage : lastVisibleMessageContent(target?.messages),
+            parentLastMessageRole: typeof branch.parentLastMessageRole === 'string' ? branch.parentLastMessageRole : lastVisibleMessageRole(target?.messages),
+            workspace: typeof branch.workspace === 'string' ? branch.workspace : null,
+          })
+        }
+        void switchSession(newSessionId)
+      }
     }
 
     const message = String((evt as any).message || '')
@@ -1421,7 +1576,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function removeQueuedMessage(sessionId: string, messageId: string) {
     if (!dropQueuedUserMessage(sessionId, messageId)) return
-    getChatRunSocket()?.emit('cancel_queued_run', {
+    getChatRunSocket(runtimeTransport())?.emit('cancel_queued_run', {
       session_id: sessionId,
       queue_id: messageId,
     })
@@ -1635,7 +1790,7 @@ export const useChatStore = defineStore('chat', () => {
   function respondToClarify(response: string) {
     const pending = activePendingClarify.value
     if (!pending) return
-    respondClarify(pending.sessionId, pending.clarifyId, response)
+    respondClarify(pending.sessionId, pending.clarifyId, response, runtimeTransport())
     pendingClarifies.value.delete(pending.sessionId)
     pendingClarifies.value = new Map(pendingClarifies.value)
   }
@@ -1644,7 +1799,7 @@ export const useChatStore = defineStore('chat', () => {
   function respondApproval(choice: PendingApproval['choices'][number]) {
     const pending = activePendingApproval.value
     if (!pending) return
-    respondToolApproval(pending.sessionId, pending.approvalId, choice)
+    respondToolApproval(pending.sessionId, pending.approvalId, choice, runtimeTransport())
     pendingApprovals.value.delete(pending.sessionId)
     pendingApprovals.value = new Map(pendingApprovals.value)
   }
@@ -1736,6 +1891,8 @@ export const useChatStore = defineStore('chat', () => {
 
     primeCompletionBellIfEnabled()
 
+    const trimmedContent = content.trim()
+
     if (!activeSession.value) {
       const session = createSession()
       switchSession(session.id)
@@ -1746,19 +1903,25 @@ export const useChatStore = defineStore('chat', () => {
     const shouldSendInitialSessionConfig = activeSession.value
       ? activeSession.value.messageCount == null || activeSession.value.messageCount === 0
       : false
-    const isCodingAgentSession = activeSession.value?.source === 'coding_agent'
-    const isBridgeSlashCommand = !isCodingAgentSession && content.trim().startsWith('/')
-    const isBridgeCompressCommand = isBridgeSlashCommand && /^\/compress(?:\s|$)/i.test(content.trim())
-    const isBridgePlanCommand = isBridgeSlashCommand && /^\/plan(?:\s|$)/i.test(content.trim())
-    const isBridgeSkillCommand = isBridgeSlashCommand && /^\/skill(?:\s|$)/i.test(content.trim())
-    const isBridgeGoalCommand = isBridgeSlashCommand && /^\/goal(?:\s|$)/i.test(content.trim())
+    const isCodingAgentSession = isCodingAgentLikeSession(activeSession.value)
+    const isBridgeSlashCommand = !isCodingAgentSession && isKnownBridgeSessionCommand(trimmedContent)
+    const isBridgeCompressCommand = isBridgeSlashCommand && /^\/compress(?:\s|$)/i.test(trimmedContent)
+    const isBridgePlanCommand = isBridgeSlashCommand && /^\/plan(?:\s|$)/i.test(trimmedContent)
+    const isBridgeSkillCommand = isBridgeSlashCommand && /^\/skill(?:\s|$)/i.test(trimmedContent)
+    const isBridgeGoalCommand = isBridgeSlashCommand && /^\/goal(?:\s|$)/i.test(trimmedContent)
+    const isBridgeForkCommand = isBridgeSlashCommand && /^\/fork(?:\s|$)/i.test(trimmedContent)
+    const shouldOptimisticallyShowRunStatus = !isCodingAgentSession && !isBridgeForkCommand
     const wasLiveBeforeSend = isSessionLive(sid)
+    if (isBridgeForkCommand) {
+      if (pendingForkCommands.value.has(sid)) return
+      pendingForkCommands.value = new Set(pendingForkCommands.value).add(sid)
+    }
     const shouldQueue = wasLiveBeforeSend && (!isBridgeSlashCommand || isBridgePlanCommand || isBridgeSkillCommand)
 
     const userMsg: Message = {
       id: uid(),
       role: isBridgeSlashCommand ? 'command' : 'user',
-      content: content.trim(),
+      content: trimmedContent,
       timestamp: Date.now(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       queued: shouldQueue,
@@ -1770,7 +1933,7 @@ export const useChatStore = defineStore('chat', () => {
     } else {
       addMessage(sid, userMsg)
       updateSessionTitle(sid)
-      if (!isCodingAgentSession) serverWorking.value.add(sid)
+      if (shouldOptimisticallyShowRunStatus) serverWorking.value.add(sid)
     }
 
     let runSubmitted = false
@@ -1807,7 +1970,7 @@ export const useChatStore = defineStore('chat', () => {
         input = await buildContentBlocks(content, attachments, uploaded)
       } else {
         // No attachments: use plain text format
-        input = content.trim()
+        input = trimmedContent
       }
 
       const appStore = useAppStore()
@@ -1820,11 +1983,27 @@ export const useChatStore = defineStore('chat', () => {
         : undefined
       const runModelGroups = profileModelGroups?.length ? profileModelGroups : appStore.modelGroups
       const providerGroup = runModelGroups.find(group => group.provider === sessionProvider)
-      const sessionSource: StartRunRequest['source'] = activeSession.value?.source === 'coding_agent' ? 'coding_agent' : 'cli'
+      const storedSource = activeSession.value?.source
+      const sessionSource: StartRunRequest['source'] = storedSource === 'global_agent'
+        ? 'global_agent'
+        : isCodingAgentSession
+          ? 'coding_agent'
+          : storedSource === 'api_server'
+            ? 'api_server'
+            : 'cli'
       const codingAgentId: 'claude-code' | 'codex' =
         activeSession.value?.codingAgentId ||
         (activeSession.value?.agent === 'codex' ? 'codex' : 'claude-code')
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
+      const codingAgentApiMode = sessionSource === 'coding_agent' && codingAgentMode !== 'global'
+        ? normalizeCodingAgentApiMode(
+            activeSession.value?.apiMode || providerGroup?.api_mode,
+            inferCodingAgentApiMode(
+              sessionProvider || providerGroup?.provider,
+              activeSession.value?.baseUrl || providerGroup?.base_url,
+            ),
+          )
+        : undefined
       const runPayload: StartRunRequest = {
         input,
         session_id: sid,
@@ -1842,13 +2021,14 @@ export const useChatStore = defineStore('chat', () => {
         queue_id: userMsg.id,
         workspace: activeSession.value?.workspace || undefined,
         source: sessionSource,
+        ...(runtimeMode.value === 'global_agent' ? { session_source: 'global_agent' as const } : {}),
         ...(sessionSource === 'coding_agent'
           ? {
               coding_agent_id: codingAgentId,
               mode: codingAgentMode,
               baseUrl: codingAgentMode === 'global' ? undefined : activeSession.value?.baseUrl || providerGroup?.base_url || undefined,
               apiKey: codingAgentMode === 'global' ? undefined : activeSession.value?.apiKey || providerGroup?.api_key || undefined,
-              apiMode: codingAgentMode === 'global' ? undefined : activeSession.value?.apiMode || providerGroup?.api_mode || undefined,
+              apiMode: codingAgentApiMode,
             }
           : {}),
         // Per-session reasoning effort override. Coding Agent runners do not
@@ -2524,7 +2704,7 @@ export const useChatStore = defineStore('chat', () => {
           activeRunMarker = null
         },
         undefined,
-        { onReconnectResume: applyReconnectResume },
+        { onReconnectResume: applyReconnectResume, transport: runtimeTransport() },
       )
       runSubmitted = true
 
@@ -2535,6 +2715,11 @@ export const useChatStore = defineStore('chat', () => {
         streamStates.value.set(sid, ctrl)
       }
     } catch (err: any) {
+      if (isBridgeForkCommand) {
+        const nextPendingForkCommands = new Set(pendingForkCommands.value)
+        nextPendingForkCommands.delete(sid)
+        pendingForkCommands.value = nextPendingForkCommands
+      }
       if (shouldQueue && !runSubmitted) {
         dropQueuedUserMessage(sid, userMsg.id)
       }
@@ -3088,7 +3273,7 @@ export const useChatStore = defineStore('chat', () => {
     // Mark as streaming so UI shows the indicator and can still abort after refresh.
     streamStates.value.set(sid, {
       abort: () => {
-        getChatRunSocket()?.emit('abort', { session_id: sid })
+        getChatRunSocket(runtimeTransport())?.emit('abort', { session_id: sid })
       },
     })
   }
@@ -3172,7 +3357,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (serverWorking.value.has(sid)) {
       setAbortState({ aborting: true, synced: null })
-      getChatRunSocket()?.emit('abort', { session_id: sid })
+      getChatRunSocket(runtimeTransport())?.emit('abort', { session_id: sid })
       const msgs = getSessionMsgs(sid)
       const lastMsg = msgs[msgs.length - 1]
       if (lastMsg?.isStreaming) {
@@ -3213,7 +3398,7 @@ export const useChatStore = defineStore('chat', () => {
               activeSession.value.hasMoreBefore = data.hasMoreBefore ?? activeSession.value.loadedMessageCount < activeSession.value.messageTotal
             }
             resumeServerWorkingRun(sid)
-          }, activeSession.value?.profile)
+          }, activeSession.value?.profile, runtimeTransport())
         }
       }
     })
@@ -3336,11 +3521,13 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     sessions,
+    runtimeMode,
     activeSessionId,
     activeSession,
     focusMessageId,
     messages,
     isStreaming,
+    isForkPending,
     isRunActive,
     isSessionLive,
     isSessionCompletedUnread,
@@ -3382,5 +3569,6 @@ export const useChatStore = defineStore('chat', () => {
     setAutoPlaySpeech,
     playMessageSpeech,
     setSessionReasoningEffort,
+    setRuntimeMode,
   }
 })
