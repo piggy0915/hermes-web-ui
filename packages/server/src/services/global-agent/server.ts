@@ -22,6 +22,10 @@ import type {
 const GLOBAL_AGENT_NAMESPACE = '/global-agent'
 const DEFAULT_GLOBAL_AGENT_TIMEOUT_MS = 30_000
 const MCU_TTS_SAMPLE_RATE = 16_000
+const MCU_TTS_OPTIONS = {
+  mcuPlayback: true,
+  sampleRate: MCU_TTS_SAMPLE_RATE,
+} as const
 const MCU_TTS_FAILED_PROMPT_TEXT = '当前文字转语音失败了，请配置下文字转语音再使用哦'
 const MCU_TTS_FAILED_PROMPT_PCM_URL =
   'https://ekko-hermes-studio.oss-cn-beijing.aliyuncs.com/tts-synthesize-failed-xiaohe.s16le.pcm'
@@ -478,7 +482,6 @@ export class GlobalAgentServer {
     if (!socket) return false
     const event = typeof payload.type === 'string' && payload.type.trim() ? payload.type.trim() : 'mcu.event'
     socket.emit(event, payload)
-    socket.broadcast.emit('relay.socket.event', { clientId: this.clientIdForSocket(socket), payload })
     return true
   }
 
@@ -1049,7 +1052,6 @@ export class GlobalAgentServer {
       : { type: event, payload }
     this.handleMcuClientEvent(clientId, event, body)
     this.emitFrontendBridgeEvent(clientId, body)
-    this.clients.get(clientId)?.broadcast.emit('relay.socket.event', { clientId, payload: body })
   }
 
   private mcuSessionId(clientId: string | undefined, profile: string): string {
@@ -1066,17 +1068,19 @@ export class GlobalAgentServer {
     return `mcu-${instance}-${profileId}`
   }
 
-  private async synthesizeMcuSpeech(text: string, userToken: string): Promise<{ url: string }> {
+  private async synthesizeMcuSpeech(text: string, userToken: string, profile: string): Promise<{ url: string }> {
+    const headers = {
+      Authorization: `Bearer ${userToken}`,
+      'Content-Type': 'application/json',
+      'X-Hermes-Profile': profile || 'default',
+    }
     const requestTts = (provider?: 'edge') => this.fetchImpl(`${this.localBaseUrl}/api/hermes/tts/synthesize`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${userToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         ...(provider ? { provider } : {}),
         text,
-        options: {},
+        options: MCU_TTS_OPTIONS,
       }),
     })
 
@@ -1119,14 +1123,11 @@ export class GlobalAgentServer {
       try {
         const fallback = await this.fetchImpl(`${this.localBaseUrl}/api/hermes/tts/synthesize`, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${userToken}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify({
             provider: 'edge',
             text,
-            options: {},
+            options: MCU_TTS_OPTIONS,
           }),
         })
         if (!fallback.ok) {
@@ -1149,7 +1150,7 @@ export class GlobalAgentServer {
   private async enqueueMcuSpeechSegment(options: McuVoiceChatTurnOptions, segmentId: string, text: string): Promise<void> {
     if (this.interruptedMcuInteractions.has(options.interactionId)) return
     this.emitMcuEvent({ type: 'interaction.status', interactionId: options.interactionId, status: 'speaking' }, { clientId: options.clientId })
-    const audio = await this.synthesizeMcuSpeech(text, options.userToken)
+    const audio = await this.synthesizeMcuSpeech(text, options.userToken, options.profile)
     if (this.interruptedMcuInteractions.has(options.interactionId)) return
     const waitForDone = this.waitForMcuAudioDone(segmentId, Math.max(90_000, Math.min(text.length * 1200, 300_000)))
     this.emitMcuEvent({
@@ -1162,6 +1163,7 @@ export class GlobalAgentServer {
       channels: 1,
       sampleRate: MCU_TTS_SAMPLE_RATE,
       durationMs: Math.max(1200, Math.min(text.length * 180, 12_000)),
+      completionManagedByServer: true,
     }, { clientId: options.clientId })
     await waitForDone
   }

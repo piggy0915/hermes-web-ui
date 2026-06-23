@@ -542,6 +542,12 @@ function isCodingAgentLikeSession(session?: Pick<Session, 'source' | 'agent' | '
     session?.agent === 'codex'
 }
 
+function clearCodingAgentRuntimeCredentials(session?: Session | null) {
+  if (!session || !isCodingAgentLikeSession(session)) return
+  session.baseUrl = undefined
+  session.apiKey = undefined
+}
+
 function isQuotaExceededError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const e = error as { name?: string, code?: number }
@@ -1230,19 +1236,29 @@ export const useChatStore = defineStore('chat', () => {
     return session
   }
 
-  async function switchSessionModel(modelId: string, provider?: string, sessionId?: string): Promise<boolean> {
+  async function switchSessionModel(modelId: string, provider?: string, sessionId?: string, apiMode?: ProviderApiMode): Promise<boolean> {
     const targetId = sessionId || activeSession.value?.id
     if (!targetId) return false
-    const ok = await setSessionModel(targetId, modelId, provider || '')
-    if (!ok) return false
     const target = sessions.value.find(s => s.id === targetId)
+    const activeTarget = activeSession.value?.id === targetId ? activeSession.value : null
+    const previousProvider = String(target?.provider ?? activeTarget?.provider ?? '')
+    const nextProvider = provider || ''
+    const shouldClearRuntimeCredentials = previousProvider !== nextProvider && (
+      isCodingAgentLikeSession(target) || isCodingAgentLikeSession(activeTarget)
+    )
+    const ok = await setSessionModel(targetId, modelId, provider || '', apiMode)
+    if (!ok) return false
     if (target) {
       target.model = modelId
       target.provider = provider || ''
+      if (apiMode) target.apiMode = apiMode
+      if (shouldClearRuntimeCredentials) clearCodingAgentRuntimeCredentials(target)
     }
-    if (activeSession.value?.id === targetId) {
-      activeSession.value.model = modelId
-      activeSession.value.provider = provider || ''
+    if (activeTarget) {
+      activeTarget.model = modelId
+      activeTarget.provider = provider || ''
+      if (apiMode) activeTarget.apiMode = apiMode
+      if (shouldClearRuntimeCredentials) clearCodingAgentRuntimeCredentials(activeTarget)
     }
     return true
   }
@@ -1379,13 +1395,24 @@ export const useChatStore = defineStore('chat', () => {
     const msgs = getSessionMsgs(sessionId)
     const last = msgs[msgs.length - 1]
     if (last?.isStreaming) {
-      updateMessage(sessionId, last.id, {
-        role: 'assistant',
-        content,
-        isStreaming: false,
-        systemType: 'error',
-      })
-      return
+      // If the streaming message already has substantial content (the assistant
+      // produced a meaningful reply before the error), don't overwrite it —
+      // just close the stream and append a separate error message. Only
+      // overwrite when the message is still empty or trivially short, meaning
+      // the run failed before producing useful output.
+      const hasSubstantialContent = (last.content || '').trim().length > 100
+      if (hasSubstantialContent) {
+        updateMessage(sessionId, last.id, { isStreaming: false })
+        // fall through to append a separate error message
+      } else {
+        updateMessage(sessionId, last.id, {
+          role: 'assistant',
+          content,
+          isStreaming: false,
+          systemType: 'error',
+        })
+        return
+      }
     }
     if (last?.role === 'assistant' && last.systemType === 'error' && last.content === content) return
     addMessage(sessionId, {
