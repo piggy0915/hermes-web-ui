@@ -1,5 +1,5 @@
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/hermes/chat'
-import { deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
+import { archiveSession as archiveSessionApi, deleteSession as deleteSessionApi, fetchSessionMessagesPage, fetchSessions, setSessionModel, type HermesMessage, type SessionSummary } from '@/api/hermes/sessions'
 import { getActiveProfileName } from '@/api/client'
 import { inferCodingAgentApiMode, normalizeCodingAgentApiMode } from '@/api/coding-agents'
 import { getDownloadUrl } from '@/api/hermes/download'
@@ -110,6 +110,7 @@ export interface Session {
   parentLastMessage?: string | null
   parentLastMessageRole?: string | null
   lastActiveAt?: number
+  isArchived?: boolean
   workspace?: string | null
   /** Per-session reasoning effort override.
    * Empty string / undefined = use config.yaml default.
@@ -507,6 +508,7 @@ function mapHermesSession(s: SessionSummary): Session {
     parentLastMessage: s.parent_last_message || null,
     parentLastMessageRole: s.parent_last_message_role || null,
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
+    isArchived: Boolean(s.is_archived),
     workspace: s.workspace || null,
   }
 }
@@ -780,6 +782,23 @@ export const useChatStore = defineStore('chat', () => {
     removeItem(storageKey())
   }
 
+  function ensureSessionLoaded(summary: SessionSummary): Session {
+    const existing = sessions.value.find(session => session.id === summary.id)
+    const mapped = mapHermesSession(summary)
+    if (existing) {
+      Object.assign(existing, {
+        ...mapped,
+        messages: existing.messages,
+        contextTokens: existing.contextTokens,
+        loadedMessageCount: existing.loadedMessageCount,
+        hasMoreBefore: existing.hasMoreBefore,
+      })
+      return existing
+    }
+    sessions.value.unshift(mapped)
+    return mapped
+  }
+
   async function loadSessions(profile?: string | null, preferredSessionId?: string | null) {
     isLoadingSessions.value = true
     try {
@@ -936,7 +955,7 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
     agent?: 'hermes' | 'claude' | 'codex'
     codingAgentId?: 'claude-code' | 'codex'
     codingAgentMode?: 'global' | 'scoped'
@@ -1206,7 +1225,7 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow'
     agent?: 'hermes' | 'claude' | 'codex'
     codingAgentId?: 'claude-code' | 'codex'
     codingAgentMode?: 'global' | 'scoped'
@@ -1275,6 +1294,29 @@ export const useChatStore = defineStore('chat', () => {
         const session = createSession()
         switchSession(session.id)
       }
+    }
+    return true
+  }
+
+  async function archiveSession(sessionId: string): Promise<boolean> {
+    const target = sessions.value.find(s => s.id === sessionId)
+    const ok = await archiveSessionApi(sessionId)
+    if (!ok) return false
+    sessions.value = sessions.value.filter(s => s.id !== sessionId)
+    if (completedUnreadSessions.value.has(sessionId)) {
+      const next = new Set(completedUnreadSessions.value)
+      next.delete(sessionId)
+      completedUnreadSessions.value = next
+    }
+    if (activeSessionId.value === sessionId) {
+      if (sessions.value.length > 0) {
+        await switchSession(sessions.value[0].id)
+      } else {
+        const session = createSession()
+        switchSession(session.id)
+      }
+    } else if (target) {
+      await refreshSessionListOnly(sessionProfileFilter.value)
     }
     return true
   }
@@ -2013,16 +2055,19 @@ export const useChatStore = defineStore('chat', () => {
       const storedSource = activeSession.value?.source
       const sessionSource: StartRunRequest['source'] = storedSource === 'global_agent'
         ? 'global_agent'
+        : storedSource === 'workflow'
+          ? 'workflow'
         : isCodingAgentSession
           ? 'coding_agent'
           : storedSource === 'api_server'
             ? 'api_server'
             : 'cli'
+      const isCodingAgentExecution = sessionSource === 'coding_agent' || (sessionSource === 'workflow' && isCodingAgentSession)
       const codingAgentId: 'claude-code' | 'codex' =
         activeSession.value?.codingAgentId ||
         (activeSession.value?.agent === 'codex' ? 'codex' : 'claude-code')
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
-      const codingAgentApiMode = sessionSource === 'coding_agent' && codingAgentMode !== 'global'
+      const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(
             activeSession.value?.apiMode || providerGroup?.api_mode,
             inferCodingAgentApiMode(
@@ -2035,10 +2080,10 @@ export const useChatStore = defineStore('chat', () => {
         input,
         session_id: sid,
         profile: sessionProfile,
-        model: sessionSource === 'coding_agent'
+        model: isCodingAgentExecution
           ? (codingAgentMode === 'global' ? undefined : sessionModel || undefined)
           : shouldSendInitialSessionConfig ? sessionModel || undefined : undefined,
-        provider: sessionSource === 'coding_agent'
+        provider: isCodingAgentExecution
           ? (codingAgentMode === 'global' ? undefined : sessionProvider || undefined)
           : shouldSendInitialSessionConfig ? sessionProvider || undefined : undefined,
         model_groups: runModelGroups.map(group => ({
@@ -2049,7 +2094,8 @@ export const useChatStore = defineStore('chat', () => {
         workspace: activeSession.value?.workspace || undefined,
         source: sessionSource,
         ...(runtimeMode.value === 'global_agent' ? { session_source: 'global_agent' as const } : {}),
-        ...(sessionSource === 'coding_agent'
+        ...(sessionSource === 'workflow' ? { session_source: 'workflow' as const } : {}),
+        ...(isCodingAgentExecution
           ? {
               coding_agent_id: codingAgentId,
               mode: codingAgentMode,
@@ -2060,7 +2106,7 @@ export const useChatStore = defineStore('chat', () => {
           : {}),
         // Per-session reasoning effort override. Coding Agent runners do not
         // consume this setting yet, so keep their payloads explicit.
-        reasoning_effort: sessionSource === 'coding_agent' ? undefined : activeSession.value?.reasoningEffort || undefined,
+        reasoning_effort: isCodingAgentExecution ? undefined : activeSession.value?.reasoningEffort || undefined,
       }
       if (shouldSendInitialSessionConfig && activeSession.value) {
         activeSession.value.messageCount = Math.max(activeSession.value.messageCount || 0, 1)
@@ -3576,11 +3622,13 @@ export const useChatStore = defineStore('chat', () => {
     newChat,
     newCliSession,
     switchSession,
+    ensureSessionLoaded,
     loadOlderMessages,
     switchSessionModel,
     addOrUpdateSession,
     clearProviderFromSessions,
     deleteSession,
+    archiveSession,
     sendMessage,
     stopStreaming,
     respondApproval,

@@ -51,6 +51,11 @@ const router = createRouter({
       component: () => import('@/views/hermes/KanbanView.vue'),
     },
     {
+      path: '/hermes/workflow',
+      name: 'hermes.workflow',
+      component: () => import('@/views/hermes/WorkflowView.vue'),
+    },
+    {
       path: '/hermes/models',
       name: 'hermes.models',
       component: () => import('@/views/hermes/ModelsView.vue'),
@@ -117,6 +122,7 @@ const router = createRouter({
       path: '/hermes/devices',
       name: 'hermes.devices',
       component: () => import('@/views/hermes/DevicesView.vue'),
+      meta: { requiresSuperAdmin: true },
     },
     {
       path: '/hermes/group-chat',
@@ -148,7 +154,6 @@ const router = createRouter({
       path: '/hermes/mcp',
       name: 'hermes.mcp',
       component: () => import('@/views/hermes/McpManagerView.vue'),
-      meta: { requiresSuperAdmin: true },
     },
   ],
 })

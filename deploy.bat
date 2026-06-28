@@ -3,7 +3,7 @@ chcp 65001 >nul
 
 set "APP_DIR=%~dp0"
 set "PROJECT_ROOT=%APP_DIR%"
-set "TARGET_DIR=%APP_DIR%..\openclaude\gateway\data\app"
+set "TARGET_DIR=%APP_DIR%..\openclaude\gateway\app"
 
 for %%i in ("%TARGET_DIR%") do set "TARGET_DIR=%%~fi"
 

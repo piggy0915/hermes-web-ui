@@ -219,9 +219,10 @@ function finiteToken(value: unknown): number | undefined {
     : undefined
 }
 
-function cacheBridgeContext(state: SessionState, data: Record<string, unknown> | AgentBridgeContextEstimate) {
+function cacheBridgeContext(state: SessionState, data: Record<string, unknown> | AgentBridgeContextEstimate, workspace?: string | null) {
   const fixedContextTokens = finiteToken(data.fixed_context_tokens)
   if (fixedContextTokens == null) return
+  const resolvedWorkspace = String(workspace || '').trim()
   state.bridgeContext = {
     fixedContextTokens,
     systemPromptTokens: finiteToken(data.system_prompt_tokens),
@@ -232,18 +233,21 @@ function cacheBridgeContext(state: SessionState, data: Record<string, unknown> |
     profile: typeof data.profile === 'string' ? data.profile : state.bridgeContext?.profile,
     model: typeof data.model === 'string' ? data.model : state.bridgeContext?.model,
     provider: typeof data.provider === 'string' ? data.provider : state.bridgeContext?.provider,
+    ...(resolvedWorkspace ? { workspace: resolvedWorkspace } : {}),
   }
 }
 
 function bridgeContextMatches(
   state: SessionState,
-  expected: { profile: string; model?: string | null; provider?: string | null },
+  expected: { profile: string; model?: string | null; provider?: string | null; workspace?: string | null },
 ): boolean {
   const context = state.bridgeContext
   if (!context) return false
   if (context.profile && context.profile !== expected.profile) return false
   if (expected.model && context.model && context.model !== expected.model) return false
   if (expected.provider && context.provider && context.provider !== expected.provider) return false
+  const expectedWorkspace = String(expected.workspace || '').trim()
+  if (expectedWorkspace && context.workspace !== expectedWorkspace) return false
   return true
 }
 
@@ -252,6 +256,7 @@ async function ensureBridgeFixedContext(args: {
   profile: string
   model?: string | null
   provider?: string | null
+  workspace?: string | null
   instructions: string
   state: SessionState
   bridge: AgentBridgeClient
@@ -268,9 +273,9 @@ async function ensureBridgeFixedContext(args: {
       [],
       args.instructions,
       args.profile,
-      { model: args.model ?? undefined, provider: args.provider ?? undefined },
+      { model: args.model ?? undefined, provider: args.provider ?? undefined, workspace: args.workspace ?? undefined },
     )
-    cacheBridgeContext(args.state, estimate)
+    cacheBridgeContext(args.state, estimate, args.workspace)
     const fixedContextTokens = getCachedBridgeContextOverhead(args.state)
     bridgeLogger.info({
       sessionId: args.sessionId,
@@ -298,7 +303,7 @@ async function ensureBridgeFixedContext(args: {
 export async function handleBridgeRun(
   nsp: ReturnType<Server['of']>,
   socket: Socket,
-  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string },
+  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; onEvent?: (event: string, payload: any) => void },
   profile: string,
   sessionMap: Map<string, SessionState>,
   bridge: AgentBridgeClient,
@@ -307,15 +312,19 @@ export async function handleBridgeRun(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
 ) {
   const { input, session_id, instructions } = data
-  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent' ? 'global_agent' : 'cli'
+  const runSource = data.session_source === 'global_agent' || data.source === 'global_agent'
+    ? 'global_agent'
+    : data.session_source === 'workflow' || data.source === 'workflow'
+      ? 'workflow'
+      : 'cli'
   if (!session_id) {
     socket.emit('run.failed', { event: 'run.failed', error: 'session_id is required for cli source' })
     return
   }
 
   let fullInstructions = instructions
-    ? `${getSystemPrompt()}\n${instructions}`
-    : getSystemPrompt()
+    ? `${getSystemPrompt(undefined, { source: data.session_source || data.source })}\n${instructions}`
+    : getSystemPrompt(undefined, { source: data.session_source || data.source })
   const sessionRow = getSession(session_id)
   const workspace = await ensureHermesRunWorkspace(profile, sessionRow?.workspace || data.workspace)
   if (sessionRow && !sessionRow.workspace) updateSession(session_id, { workspace })
@@ -338,7 +347,6 @@ export async function handleBridgeRun(
   const socketUser = socket.data.user as AuthenticatedUser | undefined
   await writeModelRunProfileToken(socketUser, profile)
   const runPrompt = [
-    workspace ? `[Current working directory: ${workspace}]` : '',
     'When calling Hermes Web UI endpoints from tools or skills, include the current Hermes profile as the X-Hermes-Profile header if the endpoint supports profile-scoped behavior.',
   ].filter(Boolean).join('\n')
   fullInstructions = `\n${runPrompt}\n${fullInstructions}`
@@ -432,8 +440,9 @@ export async function handleBridgeRun(
   }
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id }
+    data.onEvent?.(event, tagged)
     nsp.to(`session:${session_id}`).emit(event, tagged)
-    if (!nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
+    if (!data.onEvent && !nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
       socket.emit(event, tagged)
     }
   }
@@ -451,6 +460,7 @@ export async function handleBridgeRun(
         profile,
         model: resolvedModel,
         provider: resolvedProvider,
+        workspace,
         instructions: fullInstructions,
         state,
         bridge,
@@ -502,6 +512,7 @@ export async function handleBridgeRun(
         ...(bridgeStorageInput !== undefined ? { storage_message: bridgeStorageInput } : {}),
         ...(resolvedModel ? { model: resolvedModel } : {}),
         ...(resolvedProvider ? { provider: resolvedProvider } : {}),
+        ...(workspace ? { workspace } : {}),
         // Local patch (reasoning-effort): per-session reasoning effort override.
         ...(data.reasoning_effort ? { reasoning_effort: data.reasoning_effort } : {}),
       },
@@ -541,6 +552,7 @@ export async function handleBridgeRun(
         dequeueNextQueuedRun,
         fullInstructions,
         { model: resolvedModel, provider: resolvedProvider },
+        workspace,
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
@@ -584,6 +596,7 @@ export async function handleBridgeRun(
         dequeueNextQueuedRun,
         fullInstructions,
         { model: resolvedModel, provider: resolvedProvider },
+        workspace,
         currentInputTokens,
         shouldPersistUserMessage && displayRole === 'user',
         data.model_groups,
@@ -609,6 +622,7 @@ export async function handleBridgeRun(
       profile,
       model: resolvedModel,
       provider: resolvedProvider,
+      workspace,
       instructions: fullInstructions,
       state,
       usage: errUsage,
@@ -650,6 +664,7 @@ export async function resumeBridgeRun(
     instructions: string
     model?: string | null
     provider?: string | null
+    workspace?: string | null
     source?: string | null
   },
   sessionMap: Map<string, SessionState>,
@@ -720,6 +735,7 @@ export async function resumeBridgeRun(
         dequeueNextQueuedRun,
         instructions,
         { model: args.model, provider: args.provider },
+        args.workspace,
       )
     }
     cursor = deltas.length
@@ -752,6 +768,7 @@ export async function resumeBridgeRun(
           dequeueNextQueuedRun,
           instructions,
           { model: args.model, provider: args.provider },
+          args.workspace,
         )
       }
       if (chunk.done) return
@@ -779,6 +796,7 @@ async function refreshFinalContextUsage(args: {
   profile: string
   model?: string | null
   provider?: string | null
+  workspace?: string | null
   instructions: string
   state: SessionState
   usage: { inputTokens: number; outputTokens: number }
@@ -800,6 +818,7 @@ async function refreshFinalContextUsage(args: {
       profile: args.profile,
       model: args.model,
       provider: args.provider,
+      workspace: args.workspace,
       instructions: args.instructions,
       state: args.state,
       bridge: args.bridge,
@@ -871,6 +890,7 @@ async function applyBridgeChunkAsync(
   dequeueNextQueuedRun: (socket: Socket, sessionId: string, fallbackProfile?: string) => void,
   instructions: string,
   modelContext: { model?: string | null; provider?: string | null },
+  workspace?: string | null,
   currentInputTokens = 0,
   currentInputIncludedInDb = true,
   modelGroups?: RunModelGroup[],
@@ -903,7 +923,7 @@ async function applyBridgeChunkAsync(
     if (evType === 'session.title.updated') {
       syncBridgeGeneratedTitle(sessionId, (ev as any).title, emit)
     } else if (evType === 'bridge.context.ready') {
-      cacheBridgeContext(state, ev)
+      cacheBridgeContext(state, ev, workspace)
       const usage = await calcAndUpdateUsage(sessionId, state, emit)
       const snapshotAware = await estimateSnapshotAwareMessageTokens({
         sessionId,
@@ -1237,6 +1257,7 @@ async function applyBridgeChunkAsync(
     profile,
     model: modelContext.model,
     provider: modelContext.provider,
+    workspace,
     instructions,
     state,
     usage,

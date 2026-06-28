@@ -10,6 +10,7 @@ import GroupMessageList from './GroupMessageList.vue'
 import GroupChatInput from './GroupChatInput.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
+import SettingsCircuitBadge from '@/components/layout/SettingsCircuitBadge.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Attachment } from '@/stores/hermes/chat'
 import type { RoomAgent } from '@/api/hermes/group-chat'
@@ -441,8 +442,8 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                     </svg>
                     <span>{{ t('sidebar.settings') }}</span>
-                    <!-- <SettingsCircuitBadge /> -->
                 </button>
+                <SettingsCircuitBadge />
             </div>
         </div>
 
@@ -480,7 +481,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                             <div class="avatar-stack-inner">
                                 <!-- User avatar first -->
                                 <span class="avatar-stack-item" :style="{ zIndex: store.agents.length + 1 }">
-                                    <ProfileAvatar class="agent-avatar" :name="store.userName || store.userId" :avatar="userMemberAvatar" :size="28" />
+                                    <ProfileAvatar class="agent-avatar" :name="store.userName || store.userId" :avatar="userMemberAvatar" :size="24" />
                                 </span>
                                 <span
                                     v-for="(agent, index) in store.agents.slice(-4)"
@@ -488,7 +489,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                     class="avatar-stack-item"
                                     :style="{ zIndex: store.agents.length - index }"
                                 >
-                                    <ProfileAvatar class="agent-avatar" :name="agentAvatarName(agent)" :avatar="profileAvatarFor(agent.profile)" :size="28" />
+                                    <ProfileAvatar class="agent-avatar" :name="agentAvatarName(agent)" :avatar="profileAvatarFor(agent.profile)" :size="24" />
                                 </span>
                                 <span v-if="store.agents.length > 4" class="avatar-stack-more">+{{ store.agents.length - 4 }}</span>
                             </div>
@@ -517,7 +518,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     <!-- Only user avatar, no agents -->
                     <div v-else-if="store.userName" class="avatar-stack-inner">
                         <span class="avatar-stack-item">
-                            <ProfileAvatar class="agent-avatar" :name="store.userName || store.userId" :avatar="userMemberAvatar" :size="28" />
+                            <ProfileAvatar class="agent-avatar" :name="store.userName || store.userId" :avatar="userMemberAvatar" :size="24" />
                         </span>
                     </div>
                     <button class="icon-btn" :title="t('groupChat.addAgent')" @click="handleAddAgent">
@@ -1180,10 +1181,14 @@ export default defineComponent({ components: { CreateRoomForm } })
 .page-sidebar-bottom {
     flex-shrink: 0;
     padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .page-sidebar-menu-btn {
-    width: 100%;
+    flex: 1 1 auto;
+    width: auto;
     min-width: 0;
     height: 36px;
     border: none;
@@ -1243,6 +1248,27 @@ export default defineComponent({ components: { CreateRoomForm } })
     gap: 12px;
     padding: 21px 20px;
     border-bottom: 1px solid $border-color;
+
+    .icon-btn {
+        width: 28px;
+        height: 28px;
+    }
+
+    .avatar-stack-item,
+    .avatar-stack-more {
+        width: 24px;
+        height: 24px;
+    }
+
+    .avatar-stack-item,
+    .avatar-stack-more,
+    .icon-btn {
+        box-sizing: content-box;
+    }
+
+    .avatar-stack-item {
+        margin-left: -10px;
+    }
 
     .room-title-text {
         font-size: 16px;
