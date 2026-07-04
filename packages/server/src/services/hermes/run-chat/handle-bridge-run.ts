@@ -24,6 +24,7 @@ import {
   syncBridgeReasoningToMessage,
   recordBridgeToolStarted,
   recordBridgeToolCompleted,
+  recordBridgeMoaDisplayTool,
 } from './bridge-message'
 import { summarizeToolArguments } from './response-utils'
 import type { ContentBlock, QueuedRun, SessionState } from './types'
@@ -34,6 +35,8 @@ import { markAbortCompleted } from './abort'
 import { writeModelRunProfileToken } from './model-run-prompt'
 import type { AuthenticatedUser } from '../../../middleware/user-auth'
 import { ensureHermesRunWorkspace } from './workspace'
+import { observeRunChatPetEvent } from '../pet-state-socket'
+import { completeWorkspaceRunCheckpoint, startWorkspaceRunCheckpoint } from './workspace-diff-tracker'
 
 const BRIDGE_USAGE_FLUSH_DELAY_MS = 200
 const BRIDGE_TITLE_EVENT_POLL_INTERVAL_MS = 500
@@ -115,9 +118,18 @@ function shouldPollBridgeGeneratedTitle(sessionId: string): boolean {
 }
 
 function looksLikeAgentFailure(value: string): boolean {
-  return /\bAPI call failed after\b/i.test(value)
-    || /\bHTTP\s+(?:4\d\d|5\d\d)\b/i.test(value)
-    || /\b(?:401|403|429|500|502|503|504)\b/.test(value) && /\b(?:unauthorized|forbidden|rate limit|unavailable|failed|error)\b/i.test(value)
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (!text) return false
+
+  return /\bAPI call failed after\b/i.test(text)
+    || /\bHTTP\s+(?:4\d\d|5\d\d)\b/i.test(text)
+    || /\b(?:401|403)\b.{0,100}\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b/i.test(text)
+    || /\b(?:unauthorized|forbidden|authentication|auth|invalid api key|permission denied)\b.{0,100}\b(?:401|403)\b/i.test(text)
+    || /\b429\b.{0,100}\b(?:rate limit|too many requests|quota)\b/i.test(text)
+    || /\b(?:rate limit|too many requests|quota)\b.{0,100}\b429\b/i.test(text)
+    || /\b(?:500|502|503|504)\b.{0,100}\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b/i.test(text)
+    || /\b(?:server error|bad gateway|service unavailable|gateway timeout|upstream|provider|request failed|api)\b.{0,100}\b(?:500|502|503|504)\b/i.test(text)
+    || /(?:无可用渠道|渠道不可用|认证失败|鉴权失败|额度不足|余额不足|请求失败|接口调用失败|限流)/i.test(text)
 }
 
 export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'error' | 'result'>): string | null {
@@ -127,19 +139,20 @@ export function bridgeTerminalError(chunk: Pick<AgentBridgeOutput, 'status' | 'e
   const resultError = result
     ? stringValue(result.error)
       || stringValue(result.exception)
-      || stringValue(result.message)
     : ''
+  const resultMessage = result ? stringValue(result.message) : ''
   const finalResponse = result ? stringValue(result.final_response) : ''
 
   if (chunk.status === 'error') {
-    return stringValue(chunk.error) || resultError || finalResponse || 'Agent run failed'
+    return stringValue(chunk.error) || resultError || resultMessage || finalResponse || 'Agent run failed'
   }
 
   if (result?.failed === true || result?.completed === false) {
-    return resultError || finalResponse || 'Agent reported failure'
+    return resultError || resultMessage || finalResponse || 'Agent reported failure'
   }
 
-  if (resultError) return resultError
+  if (resultError && looksLikeAgentFailure(resultError)) return resultError
+  if (!finalResponse && resultMessage && looksLikeAgentFailure(resultMessage)) return resultMessage
   if (finalResponse && looksLikeAgentFailure(finalResponse)) return finalResponse
 
   return null
@@ -303,7 +316,7 @@ async function ensureBridgeFixedContext(args: {
 export async function handleBridgeRun(
   nsp: ReturnType<Server['of']>,
   socket: Socket,
-  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; onEvent?: (event: string, payload: any) => void },
+  data: { input: string | ContentBlock[]; display_input?: string | ContentBlock[] | null; display_role?: 'user' | 'command'; storage_message?: string; session_id?: string; model?: string; provider?: string; model_groups?: RunModelGroup[]; instructions?: string; workspace?: string | null; source?: string; session_source?: 'global_agent' | 'workflow'; queue_id?: string; peerExcludeSocketId?: string; reasoning_effort?: string; one_shot_model?: boolean; onEvent?: (event: string, payload: any) => void },
   profile: string,
   sessionMap: Map<string, SessionState>,
   bridge: AgentBridgeClient,
@@ -337,8 +350,9 @@ export async function handleBridgeRun(
     requestedModel: data.model,
     requestedProvider: data.provider,
     modelGroups: data.model_groups,
+    preferRequested: data.one_shot_model === true,
   })
-  if (sessionRow) {
+  if (sessionRow && data.one_shot_model !== true) {
     const updates: { model?: string; provider?: string } = {}
     if (resolvedModel && sessionRow.model !== resolvedModel) updates.model = resolvedModel
     if (resolvedProvider && sessionRow.provider !== resolvedProvider) updates.provider = resolvedProvider
@@ -440,6 +454,7 @@ export async function handleBridgeRun(
   }
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id }
+    observePetEvent(profile, event, tagged)
     data.onEvent?.(event, tagged)
     nsp.to(`session:${session_id}`).emit(event, tagged)
     if (!data.onEvent && !nsp.adapter.rooms.get(`session:${session_id}`)?.size && socket.connected) {
@@ -518,6 +533,15 @@ export async function handleBridgeRun(
       },
     )
     state.runId = started.run_id
+    try {
+      startWorkspaceRunCheckpoint({
+        sessionId: session_id,
+        runId: started.run_id,
+        workspace,
+      })
+    } catch (err) {
+      bridgeLogger.warn({ err, sessionId: session_id, runId: started.run_id }, '[workspace-diff] failed to start run checkpoint')
+    }
     bridgeLogger.info({
       sessionId: session_id,
       runId: started.run_id,
@@ -694,6 +718,7 @@ export async function resumeBridgeRun(
 
   const emit = (event: string, payload: any) => {
     const tagged = { ...payload, session_id: sessionId }
+    observePetEvent(profile, event, tagged)
     nsp.to(`session:${sessionId}`).emit(event, tagged)
     if (!nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
       socket.emit(event, tagged)
@@ -788,6 +813,14 @@ export async function resumeBridgeRun(
       error: err instanceof Error ? err.message : String(err),
       resumed: true,
     })
+  }
+}
+
+function observePetEvent(profile: string, event: string, payload: Record<string, unknown>): void {
+  try {
+    observeRunChatPetEvent(profile, event, payload)
+  } catch (err) {
+    logger.debug(err, '[chat-run-socket] failed to update pet state')
   }
 }
 
@@ -1029,6 +1062,47 @@ async function applyBridgeChunkAsync(
         event: 'reasoning.available',
         run_id: chunk.run_id,
       })
+    } else if (evType === 'moa.reference') {
+      const index = Number.isFinite(Number((ev as any).index)) ? Number((ev as any).index) : undefined
+      const count = Number.isFinite(Number((ev as any).count)) ? Number((ev as any).count) : undefined
+      const label = String((ev as any).label || 'reference')
+      const text = String((ev as any).text || '')
+      const preview = index != null && count != null ? `${index}/${count} ${label}` : label
+      const payload = {
+        event: 'moa.reference',
+        run_id: chunk.run_id,
+        label,
+        text,
+        index,
+        count,
+      }
+      recordBridgeMoaDisplayTool(
+        state,
+        sessionId,
+        runMarker,
+        'moa_reference',
+        `moa:reference:${chunk.run_id || runMarker}:${index ?? label}`,
+        JSON.stringify({ label, preview, text, index, count }),
+      )
+      pushState(sessionMap, sessionId, 'moa.reference', payload)
+      emit('moa.reference', payload)
+    } else if (evType === 'moa.aggregating') {
+      const aggregator = String((ev as any).aggregator || '')
+      const payload = {
+        event: 'moa.aggregating',
+        run_id: chunk.run_id,
+        aggregator,
+      }
+      recordBridgeMoaDisplayTool(
+        state,
+        sessionId,
+        runMarker,
+        'moa_aggregating',
+        `moa:aggregating:${chunk.run_id || runMarker}`,
+        JSON.stringify({ aggregator, preview: aggregator, text: aggregator }),
+      )
+      replaceState(sessionMap, sessionId, 'moa.aggregating', payload)
+      emit('moa.aggregating', payload)
     } else if (evType === 'approval.requested') {
       const payload = {
         event: 'approval.requested',
@@ -1246,8 +1320,27 @@ async function applyBridgeChunkAsync(
   // prefix buffered, flush it to the user-visible stream now. Discarding
   // it (which the line below was doing implicitly) silently drops the
   // final characters of the assistant message.
+  const terminalError = bridgeTerminalError(chunk)
+  const useMoaFinalResponse = String(modelContext.provider || '').toLowerCase() === 'moa'
+  let finalResponse = bridgeFinalResponse(chunk, state, useMoaFinalResponse)
+  if (
+    useMoaFinalResponse
+    &&
+    !terminalError
+    && finalResponse.trim()
+    && !(state.bridgeOutput || '').trim()
+    && !(state.bridgePendingAssistantContent || '').trim()
+  ) {
+    state.bridgeOutput = finalResponse
+    state.bridgePendingAssistantContent = finalResponse
+    const message = ensureOpenBridgeAssistantMessage(state, sessionId, runMarker)
+    message.content = finalResponse
+    syncBridgeReasoningToMessage(message, state.bridgePendingReasoningContent)
+  }
+
   flushPendingToolMarkupToAssistant(state, runMarker, chunk.run_id, emit)
   flushBridgePendingToDb(state, sessionId)
+  finalResponse = bridgeFinalResponse(chunk, state, useMoaFinalResponse)
   state.bridgePendingToolCallMarkup = undefined
   updateSessionStats(sessionId)
   await delay(BRIDGE_USAGE_FLUSH_DELAY_MS)
@@ -1269,8 +1362,29 @@ async function applyBridgeChunkAsync(
     outputTokens: usage.outputTokens,
     profile: state.profile,
   })
-  const terminalError = bridgeTerminalError(chunk)
   const hadQueuedRunBeforeGoalEvaluation = state.queue.length > 0
+  const eventName = terminalError ? 'run.failed' : 'run.completed'
+  let workspaceRunChange: ReturnType<typeof completeWorkspaceRunCheckpoint> = null
+  try {
+    const change = completeWorkspaceRunCheckpoint({
+      sessionId,
+      runId: chunk.run_id,
+      workspace,
+    })
+    workspaceRunChange = change
+    if (change) {
+      const changePayload = {
+        event: 'workspace.diff.completed',
+        run_id: chunk.run_id,
+        change_id: change.change_id,
+        change,
+      }
+      pushState(sessionMap, sessionId, 'workspace.diff.completed', changePayload)
+      emit('workspace.diff.completed', changePayload)
+    }
+  } catch (err) {
+    bridgeLogger.warn({ err, sessionId, runId: chunk.run_id }, '[workspace-diff] failed to complete run checkpoint')
+  }
   state.isWorking = hadQueuedRunBeforeGoalEvaluation
   state.isAborting = false
   state.profile = hadQueuedRunBeforeGoalEvaluation ? (state.queue[0]?.profile || profile) : undefined
@@ -1278,17 +1392,17 @@ async function applyBridgeChunkAsync(
   state.runId = undefined
   state.activeRunMarker = undefined
   state.events = []
-  const eventName = terminalError ? 'run.failed' : 'run.completed'
   const payload = {
     event: eventName,
     run_id: chunk.run_id,
-    output: chunk.output || state.bridgeOutput || '',
+    output: finalResponse,
     result: chunk.result,
     error: terminalError || chunk.error,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     contextTokens,
     queue_remaining: state.queue.length,
+    workspace_run_change: workspaceRunChange,
   }
   emit(eventName, payload)
 
@@ -1303,7 +1417,7 @@ async function applyBridgeChunkAsync(
       modelContext,
       modelGroups,
       instructions,
-      finalResponse: bridgeFinalResponse(chunk, state),
+      finalResponse,
     })
   }
 
@@ -1344,14 +1458,15 @@ async function pollBridgeGeneratedTitleAfterRun(
   }
 }
 
-function bridgeFinalResponse(chunk: AgentBridgeOutput, state: SessionState): string {
+function bridgeFinalResponse(chunk: AgentBridgeOutput, state: SessionState, useResultFinalResponse = false): string {
   const result = chunk.result && typeof chunk.result === 'object' && !Array.isArray(chunk.result)
     ? chunk.result as Record<string, unknown>
     : null
   const finalResponse = result && typeof result.final_response === 'string'
     ? result.final_response
     : ''
-  return finalResponse || chunk.output || state.bridgeOutput || ''
+  const streamedResponse = chunk.output || state.bridgeOutput || ''
+  return useResultFinalResponse ? finalResponse || streamedResponse : streamedResponse
 }
 
 function hasRealQueuedRun(state: SessionState): boolean {

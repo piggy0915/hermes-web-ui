@@ -123,8 +123,8 @@ def save_permanent_allowlist(patterns):
 def load_permanent_allowlist():
     return set(approval._permanent_approved)
 
-def check_execute_code_guard(code, env_type):
-    approval._check_execute_code_calls.append((code, env_type))
+def check_execute_code_guard(code, env_type, has_host_access=False):
+    approval._check_execute_code_calls.append((code, env_type, has_host_access))
     return {"approved": False, "message": "upstream prompt"}
 
 approval.set_current_session_key = set_current_session_key
@@ -419,11 +419,15 @@ bridge._install_execute_code_approval_memory_patch()
 token = approval.set_current_session_key("session-c")
 try:
     approval.approve_session("session-c", "execute_code")
-    check_result = approval.check_execute_code_guard("print(3)", "local")
+    check_result = approval.check_execute_code_guard("print(3)", "local", has_host_access=True)
     assert check_result["approved"] is True
     assert approval._check_execute_code_calls == []
 finally:
     approval.reset_current_session_key(token)
+
+check_result = approval.check_execute_code_guard("print(4)", "local", has_host_access=True)
+assert check_result["approved"] is False
+assert approval._check_execute_code_calls == [("print(4)", "local", True)]
 `)
   })
 
@@ -1230,6 +1234,64 @@ assert events == [
     "shutdown-started",
     ("lock-free-during-shutdown", True),
     "shutdown-finished",
+], events
+`)
+  })
+
+  it('shuts down MCP servers before worker shutdown exits', () => {
+    runPython(String.raw`
+${harness}
+
+events = []
+
+class FakeBridgeServer(bridge.BridgeServer):
+    def _shutdown_all_mcp_servers(self):
+        events.append("mcp-shutdown")
+        return 2
+
+server = FakeBridgeServer("tcp://127.0.0.1:1")
+response = server.handle({"action": "shutdown"})
+
+assert response == {"status": "shutting_down"}, response
+assert events == ["mcp-shutdown"], events
+assert server._stop.is_set(), "shutdown should stop worker after MCP shutdown"
+`)
+  })
+
+  it('requests worker shutdown before terminating the worker process', () => {
+    runPython(String.raw`
+${harness}
+
+events = []
+
+class FakeProcess:
+    def __init__(self):
+        self.terminated = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        events.append("terminate")
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        events.append(("wait", timeout))
+
+worker = bridge.WorkerProcess("default", "default", "tcp://127.0.0.1:1", None, None)
+worker.process = FakeProcess()
+
+def fake_request(req, timeout=None):
+    events.append(("request", req, timeout))
+    return {"status": "shutting_down"}
+
+worker.request = fake_request
+worker.stop()
+
+assert events == [
+    ("request", {"action": "shutdown"}, worker.SHUTDOWN_REQUEST_TIMEOUT_SECONDS),
+    "terminate",
+    ("wait", 3),
 ], events
 `)
   })

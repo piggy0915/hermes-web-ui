@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm, symlink } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const listConversationSummariesFromDbMock = vi.fn()
 const getConversationDetailFromDbMock = vi.fn()
@@ -103,6 +106,7 @@ vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileName: getActiveProfileNameMock,
+  getActiveProfileDir: () => '/tmp/hermes-test/default',
   getProfileDir: (name: string) => `/tmp/hermes-test/${name || 'default'}`,
   listProfileNamesFromDisk: () => ['default', 'travel'],
 }))
@@ -211,6 +215,249 @@ describe('session conversations controller', () => {
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
     expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+  })
+
+  it('lists Windows drive roots for the workspace folder picker', async () => {
+    const originalPlatform = process.platform
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const readdirMock = vi.fn(async (path: string) => {
+      if (path === 'D:\\') {
+        return [
+          { name: 'Projects', isDirectory: () => true },
+          { name: 'notes.txt', isDirectory: () => false },
+        ]
+      }
+      return []
+    })
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    delete process.env.WORKSPACE_BASE
+    vi.doMock('fs', () => ({
+      existsSync: (path: string) => path === 'C:\\' || path === 'D:\\',
+    }))
+    vi.doMock('fs/promises', () => ({
+      readdir: readdirMock,
+      stat: vi.fn(async () => ({ isDirectory: () => true })),
+      realpath: vi.fn(async (path: string) => path),
+    }))
+
+    try {
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.body.folders).toEqual([
+        { name: 'C:\\', path: 'C:\\', fullPath: 'C:\\', readonly: true },
+        { name: 'D:\\', path: 'D:\\', fullPath: 'D:\\', readonly: true },
+      ])
+
+      const driveCtx: any = { query: { path: 'D:\\' }, body: null }
+      await mod.listWorkspaceFolders(driveCtx)
+
+      expect(readdirMock).toHaveBeenCalledWith('D:\\', { withFileTypes: true })
+      expect(driveCtx.body).toMatchObject({
+        base: 'D:\\',
+        current: 'D:\\',
+        folders: [{ name: 'Projects', path: 'D:\\Projects', fullPath: 'D:\\Projects' }],
+      })
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      vi.doUnmock('fs')
+      vi.doUnmock('fs/promises')
+    }
+  })
+
+  it('lists Windows junction-like workspace folders even when their target realpath leaves WORKSPACE_BASE', async () => {
+    const originalPlatform = process.platform
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-win-picker-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-win-picker-outside-'))
+
+    try {
+      const outsideTarget = join(outsideRoot, 'drive-target')
+      const outsideChild = join(outsideTarget, 'project')
+      const outsideLink = join(workspaceBase, 'DrivesD')
+
+      await mkdir(outsideChild, { recursive: true })
+      await symlink(outsideTarget, outsideLink)
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body.folders).toContainEqual({
+        name: 'DrivesD',
+        path: 'DrivesD',
+        fullPath: outsideLink,
+      })
+
+      const nestedCtx: any = { query: { path: 'DrivesD' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body.folders).toEqual([
+        { name: 'project', path: 'DrivesD/project', fullPath: join(outsideLink, 'project') },
+      ])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('lists symlinked workspace folders that resolve within WORKSPACE_BASE and blocks escaped links', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-picker-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-picker-outside-'))
+
+    try {
+      const safeTarget = join(workspaceBase, 'workspace-target')
+      const safeChild = join(safeTarget, 'nested-child')
+      const safeLink = join(workspaceBase, 'linked-workspace')
+      const outsideTarget = join(outsideRoot, 'external-target')
+      const outsideLink = join(workspaceBase, 'linked-external')
+
+      await mkdir(safeChild, { recursive: true })
+      await mkdir(outsideTarget, { recursive: true })
+      await symlink(safeTarget, safeLink)
+      await symlink(outsideTarget, outsideLink)
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body).toEqual({
+        base: workspaceBase,
+        current: '',
+        folders: [
+          { name: 'linked-workspace', path: 'linked-workspace', fullPath: safeLink },
+          { name: 'workspace-target', path: 'workspace-target', fullPath: safeTarget },
+        ],
+      })
+
+      const nestedCtx: any = { query: { path: 'linked-workspace' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body).toEqual({
+        base: workspaceBase,
+        current: 'linked-workspace',
+        folders: [
+          { name: 'nested-child', path: 'linked-workspace/nested-child', fullPath: join(safeLink, 'nested-child') },
+        ],
+      })
+
+      const escapedCtx: any = { query: { path: 'linked-external' }, body: null }
+      await mod.listWorkspaceFolders(escapedCtx)
+
+      expect(escapedCtx.status).toBe(403)
+      expect(escapedCtx.body).toEqual({ error: 'Access denied' })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('lists dot-prefixed workspace folders under WORKSPACE_BASE', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-dot-picker-'))
+
+    try {
+      const hermesDir = join(workspaceBase, '.hermes')
+      const codexDir = join(workspaceBase, '.codex')
+      const hiddenChildDir = join(hermesDir, '.plugins')
+      const visibleChildDir = join(hermesDir, 'workspace')
+
+      await mkdir(hiddenChildDir, { recursive: true })
+      await mkdir(visibleChildDir, { recursive: true })
+      await mkdir(codexDir, { recursive: true })
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      const rootCtx: any = { query: {}, body: null }
+      await mod.listWorkspaceFolders(rootCtx)
+
+      expect(rootCtx.status).toBeUndefined()
+      expect(rootCtx.body).toEqual({
+        base: workspaceBase,
+        current: '',
+        folders: [
+          { name: '.codex', path: '.codex', fullPath: codexDir },
+          { name: '.hermes', path: '.hermes', fullPath: hermesDir },
+        ],
+      })
+
+      const nestedCtx: any = { query: { path: '.hermes' }, body: null }
+      await mod.listWorkspaceFolders(nestedCtx)
+
+      expect(nestedCtx.status).toBeUndefined()
+      expect(nestedCtx.body).toEqual({
+        base: workspaceBase,
+        current: '.hermes',
+        folders: [
+          { name: '.plugins', path: '.hermes/.plugins', fullPath: hiddenChildDir },
+          { name: 'workspace', path: '.hermes/workspace', fullPath: visibleChildDir },
+        ],
+      })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks workspace folder mutations through symlinked ancestors that escape WORKSPACE_BASE', async () => {
+    const originalWorkspaceBase = process.env.WORKSPACE_BASE
+    const workspaceBase = await mkdtemp(join(tmpdir(), 'hermes-workspace-mutation-'))
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'hermes-workspace-mutation-outside-'))
+
+    try {
+      const outsideTarget = join(outsideRoot, 'external-target')
+      const escapeLink = join(workspaceBase, 'escape-link')
+
+      await mkdir(outsideTarget, { recursive: true })
+      await symlink(outsideTarget, escapeLink)
+      process.env.WORKSPACE_BASE = workspaceBase
+
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+
+      const createCtx: any = { request: { body: { parentPath: 'escape-link', name: 'created' } }, body: null }
+      await mod.createWorkspaceFolder(createCtx)
+      expect(createCtx.status).toBe(403)
+      expect(createCtx.body).toEqual({ error: 'Access denied' })
+
+      const renameCtx: any = { request: { body: { path: 'escape-link', name: 'renamed-link' } }, body: null }
+      await mod.renameWorkspaceFolder(renameCtx)
+      expect(renameCtx.status).toBe(403)
+      expect(renameCtx.body).toEqual({ error: 'Access denied' })
+
+      const deleteCtx: any = { request: { body: { path: 'escape-link' } }, body: null }
+      await mod.deleteWorkspaceFolder(deleteCtx)
+      expect(deleteCtx.status).toBe(403)
+      expect(deleteCtx.body).toEqual({ error: 'Access denied' })
+
+      const { access } = await import('fs/promises')
+      await expect(access(escapeLink)).resolves.toBeUndefined()
+      await expect(access(join(outsideTarget, 'created'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(access(join(workspaceBase, 'renamed-link'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      if (originalWorkspaceBase === undefined) delete process.env.WORKSPACE_BASE
+      else process.env.WORKSPACE_BASE = originalWorkspaceBase
+      await rm(workspaceBase, { recursive: true, force: true })
+      await rm(outsideRoot, { recursive: true, force: true })
+    }
   })
 
   it('returns clean session context without tool calls or tool results', async () => {
@@ -535,12 +782,12 @@ describe('session conversations controller', () => {
     ])
   })
 
-  it('keeps archived sessions visible in Hermes history', async () => {
-    localListSessionsMock.mockReturnValue([{ id: 'cli-archived', profile: 'travel', is_archived: 1 }])
+  it.each(['cli', 'api_server'])('keeps archived %s sessions visible in Hermes history', async (source) => {
+    localListSessionsMock.mockReturnValue([{ id: `${source}-archived`, profile: 'travel', source, is_archived: 1 }])
     listSessionSummariesMock.mockResolvedValue([
       {
-        id: 'cli-archived',
-        source: 'cli',
+        id: `${source}-archived`,
+        source,
         model: 'gpt-5',
         title: 'Archived imported history',
         started_at: 1,
@@ -567,7 +814,13 @@ describe('session conversations controller', () => {
     await mod.listHermesSessions(ctx)
 
     expect(ctx.body.sessions).toEqual([
-      expect.objectContaining({ id: 'cli-archived', profile: 'travel', webui_imported: true }),
+      expect.objectContaining({
+        id: `${source}-archived`,
+        source,
+        profile: 'travel',
+        webui_imported: true,
+        is_archived: 1,
+      }),
     ])
   })
 
