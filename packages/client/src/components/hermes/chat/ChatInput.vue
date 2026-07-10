@@ -310,6 +310,11 @@ async function loadSkills() {
 
 // 自定义高度拖拽
 const textareaHeight = ref<number | null>(null) // null = auto
+const inputWrapperStyle = computed(() => {
+  const height = textareaHeight.value ?? configuredTextareaHeight.value
+  if (height === null) return {}
+  return { minHeight: `${height + 71}px` }
+})
 
 function syncViewport() {
   if (typeof window === 'undefined') return
@@ -497,6 +502,11 @@ watch(configuredTextareaHeight, () => {
   applyConfiguredTextareaHeight()
 })
 
+watch(() => settingsStore.display.chat_input_height, () => {
+  manualTextareaResize.value = false
+  applyConfiguredTextareaHeight()
+})
+
 watch(
   () => [chatStore.activeSession?.profile, profilesStore.activeProfileName],
   () => {
@@ -588,10 +598,8 @@ let contextLengthRequest: Promise<void> | null = null
 const showContextEditModal = ref(false)
 const editingContextLimit = ref(256000)
 const isSavingContextLimit = ref(false)
-const isCodingAgentSession = computed(() => chatStore.activeSession?.source === 'coding_agent')
 
 async function handleEditContextLimit() {
-  if (isCodingAgentSession.value) return
   editingContextLimit.value = contextLength.value
   showContextEditModal.value = true
 }
@@ -639,7 +647,6 @@ function currentContextLengthKey() {
 }
 
 async function loadContextLength() {
-  if (isCodingAgentSession.value) return
   const key = currentContextLengthKey()
   if (key === contextLengthLoadedKey) return
   if (key === contextLengthRequestKey && contextLengthRequest) return contextLengthRequest
@@ -683,14 +690,13 @@ watch(
 )
 
 const totalTokens = computed(() => {
-  if (isCodingAgentSession.value) return 0
   const context = chatStore.activeSession?.contextTokens
   if (typeof context === 'number' && Number.isFinite(context) && context > 0) return context
   const input = chatStore.activeSession?.inputTokens ?? 0
   const output = chatStore.activeSession?.outputTokens ?? 0
   return input + output
 })
-const showContextUsage = computed(() => totalTokens.value > 0)
+const showContextUsage = computed(() => !!chatStore.activeSession)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
 
@@ -1018,6 +1024,7 @@ function isImage(type: string): boolean {
     <div
       class="input-wrapper"
       :class="{ 'drag-over': isDragging }"
+      :style="inputWrapperStyle"
       @dragover="handleDragOver"
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
@@ -1089,7 +1096,6 @@ function isImage(type: string): boolean {
           </NTooltip>
 
           <NPopselect
-            v-if="!isCodingAgentSession"
             :value="currentReasoningEffort"
             :options="reasoningEffortOptions"
             trigger="click"

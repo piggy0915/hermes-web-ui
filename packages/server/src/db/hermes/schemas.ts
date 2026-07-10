@@ -39,6 +39,7 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   user_id: 'TEXT',
   model: 'TEXT NOT NULL DEFAULT \'\'',
   provider: 'TEXT NOT NULL DEFAULT \'\'',
+  api_mode: 'TEXT NOT NULL DEFAULT \'\'',
   title: 'TEXT',
   parent_session_id: 'TEXT',
   fork_point_message_id: 'TEXT',
@@ -92,6 +93,8 @@ export const WORKSPACE_RUN_CHANGES_TABLE = 'workspace_run_changes'
 
 export const WORKSPACE_RUN_CHANGES_SCHEMA: Record<string, string> = {
   change_id: 'TEXT PRIMARY KEY',
+  room_id: "TEXT NOT NULL DEFAULT ''",
+  message_id: "TEXT NOT NULL DEFAULT ''",
   session_id: 'TEXT NOT NULL',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
   source: 'TEXT NOT NULL DEFAULT \'run\'',
@@ -130,6 +133,7 @@ export const WORKSPACE_RUN_CHANGE_FILES_SCHEMA: Record<string, string> = {
 export const WORKSPACE_RUN_CHANGES_INDEXES = {
   idx_workspace_run_changes_session: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_session ON workspace_run_changes(session_id, created_at)',
   idx_workspace_run_changes_run: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_run ON workspace_run_changes(run_id)',
+  idx_workspace_run_changes_room: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_room ON workspace_run_changes(room_id, created_at)',
 }
 
 export const WORKSPACE_RUN_CHANGE_FILES_INDEXES = {
@@ -310,6 +314,24 @@ export const DEVICES_INDEXES = {
   idx_devices_last_seen: 'CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at)',
 }
 
+// ============================================================================
+// MCU Devices
+// ============================================================================
+
+export const MCU_DEVICES_TABLE = 'mcu_devices'
+
+export const MCU_DEVICES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: "TEXT NOT NULL DEFAULT ''",
+  device_code: 'TEXT NOT NULL UNIQUE',
+  is_official: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const MCU_DEVICES_INDEXES = {
+  idx_mcu_devices_created_at: 'CREATE INDEX IF NOT EXISTS idx_mcu_devices_created_at ON mcu_devices(created_at)',
+}
+
 export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
 
 export const STT_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
@@ -429,6 +451,8 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
   totalTokens: 'INTEGER NOT NULL DEFAULT 0',
   sessionSeed: "TEXT NOT NULL DEFAULT '0'",
+  workspace: "TEXT NOT NULL DEFAULT ''",
+  ownerAuthUserId: 'INTEGER',
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'
@@ -814,6 +838,12 @@ export function initAllHermesTables(): void {
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
       indexes: DEVICES_INDEXES,
     })
+
+    // MCU devices
+    syncTable(MCU_DEVICES_TABLE, MCU_DEVICES_SCHEMA, {
+      indexes: MCU_DEVICES_INDEXES,
+    })
+
     syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
       indexes: STT_PROVIDER_SETTINGS_INDEXES,
     })
