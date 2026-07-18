@@ -5,6 +5,8 @@ import { fetchCodingAgentsStatus, inferCodingAgentApiMode, normalizeCodingAgentA
 import { useChatStore, type Session } from "@/stores/hermes/chat";
 import { useAppStore } from "@/stores/hermes/app";
 import { useProfilesStore } from "@/stores/hermes/profiles";
+import { useFilesStore } from "@/stores/hermes/files";
+import { useToolPanelStore } from "@/stores/hermes/tool-panel";
 import { useSessionBrowserPrefsStore } from "@/stores/hermes/session-browser-prefs";
 import {
   NButton,
@@ -18,29 +20,37 @@ import {
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
+  NSpin,
   useMessage,
   type DropdownOption,
 } from "naive-ui";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { copyToClipboard } from "@/utils/clipboard";
 import FolderPicker from "./FolderPicker.vue";
 import ChatInput from "./ChatInput.vue";
+import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
 import MessageList from "./MessageList.vue";
 import SessionListItem from "./SessionListItem.vue";
 import OutlinePanel from "./OutlinePanel.vue";
-import FilesPanel from "./FilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import SettingsCircuitBadge from "@/components/layout/SettingsCircuitBadge.vue";
 import { isStoredSuperAdmin } from "@/api/client";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
+import { canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
+
+const FilesPanel = defineAsyncComponent(async () => (await import('./FilesPanel.vue')).default);
+const FilePreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/FilePreview.vue')).default);
+const WorkspaceDiffPreview = defineAsyncComponent(async () => (await import('@/components/hermes/files/WorkspaceDiffPreview.vue')).default);
 
 const chatStore = useChatStore();
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
+const filesStore = useFilesStore();
+const toolPanelStore = useToolPanelStore();
 const sessionBrowserPrefsStore = useSessionBrowserPrefsStore();
 const router = useRouter();
 const message = useMessage();
@@ -48,14 +58,18 @@ const { t } = useI18n();
 const isSuperAdmin = computed(() => isStoredSuperAdmin());
 
 const showOutline = ref(false);
+const showRealtimeVoice = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & { addFiles?: (files: File[]) => void }) | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
+const chatMainContentRef = ref<HTMLElement | null>(null);
+let sessionFadeAnimation: Animation | null = null;
 const chatDropCounter = ref(0);
 const isChatDropActive = ref(false);
 const showToolPanel = ref(false);
 const activeToolPanel = ref<"files" | "terminal">("files");
 const activeWorkspaceSessionId = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.id : null);
+const activePreviewSessionId = computed(() => chatStore.activeSession?.id && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.id : null);
 const activeWorkspacePath = computed(() => chatStore.activeSession?.workspace && !chatStore.activeSession.isLocalOnly ? chatStore.activeSession.workspace : null);
 const TOOL_PANEL_MIN_WIDTH = 360;
 const TOOL_PANEL_DEFAULT_WIDTH = 560;
@@ -86,6 +100,15 @@ const isMobile = ref(false);
 const toolPanelStyle = computed(() => ({
   width: isMobile.value ? "100%" : `${toolPanelWidth.value}px`,
 }));
+
+function openRealtimeVoice() {
+  if (!chatStore.activeSessionId) return;
+  showRealtimeVoice.value = true;
+}
+
+function closeRealtimeVoice() {
+  showRealtimeVoice.value = false;
+}
 
 function sessionHref(sessionId: string) {
   return router.resolve({
@@ -163,6 +186,26 @@ function startToolResize(event: PointerEvent) {
   document.body.style.cursor = "col-resize";
 }
 
+function closeToolPanelOverlay(): boolean {
+  if (toolPanelStore.workspaceDiff && filesStore.hasUnsavedChanges) {
+    message.warning(t("files.unsavedChanges"));
+    return false;
+  }
+  if (toolPanelStore.workspaceDiff && filesStore.editingFile) filesStore.closeEditor();
+  filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
+  showToolPanel.value = false;
+  return true;
+}
+
+function toggleToolPanel() {
+  if (showToolPanel.value) {
+    closeToolPanelOverlay();
+    return;
+  }
+  showToolPanel.value = true;
+}
+
 function hasDraggedFiles(event: DragEvent) {
   return Array.from(event.dataTransfer?.types || []).includes("Files");
 }
@@ -224,11 +267,46 @@ function openPageSidebar() {
   showSessions.value = true;
 }
 
+function workspacePreviewPath(filePath: string): string | null {
+  const workspace = activeWorkspacePath.value?.replace(/\\/g, "/").replace(/\/+$/, "");
+  let decodedPath = filePath;
+  try {
+    decodedPath = decodeURIComponent(filePath);
+  } catch {
+    // Keep malformed percent sequences unchanged so the server can reject them.
+  }
+  const normalizedPath = decodedPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedPath || !(normalizedPath.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedPath))) return null;
+  if (!workspace) return normalizedPath;
+  const ignoreCase = /^[a-zA-Z]:\//.test(workspace);
+  const comparableWorkspace = ignoreCase ? workspace.toLowerCase() : workspace;
+  const comparablePath = ignoreCase ? normalizedPath.toLowerCase() : normalizedPath;
+  if (!comparablePath.startsWith(`${comparableWorkspace}/`)) return normalizedPath;
+  return normalizedPath.slice(workspace.length + 1);
+}
+
+function handleWorkspaceFilePreviewRequest(event: Event) {
+  const customEvent = event as CustomEvent<{ path?: string; fileName?: string }>;
+  const sessionId = activePreviewSessionId.value;
+  const filePath = typeof customEvent.detail?.path === "string" ? customEvent.detail.path : "";
+  const previewPath = workspacePreviewPath(filePath);
+  if (!sessionId || !previewPath) return;
+
+  customEvent.preventDefault();
+  const fileName = customEvent.detail?.fileName || previewPath.split("/").pop() || previewPath;
+  filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
+  void filesStore.openSessionWorkspacePreview(sessionId, previewPath, fileName).catch((error) => {
+    message.error(error instanceof Error ? error.message : t("files.previewFailed"));
+  });
+}
+
 onMounted(() => {
   mobileQuery = window.matchMedia("(max-width: 768px)");
   handleMobileChange(mobileQuery);
   mobileQuery.addEventListener("change", handleMobileChange);
   window.addEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.addEventListener("hermes:preview-workspace-file", handleWorkspaceFilePreviewRequest);
   window.addEventListener("resize", handleToolPanelViewportResize);
   handleToolPanelViewportResize();
   if (profilesStore.profiles.length === 0) {
@@ -236,17 +314,64 @@ onMounted(() => {
   }
 });
 
+watch(
+  () => chatStore.activeSessionId,
+  async (sessionId, previousSessionId) => {
+    if (!sessionId || !previousSessionId || sessionId === previousSessionId) return;
+
+    if (filesStore.previewFile || toolPanelStore.workspaceDiff) {
+      closeToolPanelOverlay();
+    }
+
+    await nextTick();
+    const surface = chatMainContentRef.value;
+    if (!surface || typeof surface.animate !== "function") return;
+
+    sessionFadeAnimation?.cancel();
+    sessionFadeAnimation = surface.animate(
+      [
+        { opacity: 0 },
+        { opacity: 1 },
+      ],
+      {
+        duration: 1500,
+        easing: "ease",
+      },
+    );
+  },
+  { flush: "post" },
+);
+
 onUnmounted(() => {
   mobileQuery?.removeEventListener("change", handleMobileChange);
   window.removeEventListener("hermes:open-page-sidebar", openPageSidebar);
+  window.removeEventListener("hermes:preview-workspace-file", handleWorkspaceFilePreviewRequest);
   window.removeEventListener("resize", handleToolPanelViewportResize);
   stopToolResize();
+  sessionFadeAnimation?.cancel();
+  if (filesStore.previewFile?.workspaceSessionId) filesStore.closePreview();
+  toolPanelStore.closeWorkspaceDiff();
+  sessionFadeAnimation = null;
 });
 watch(showToolPanel, async (visible) => {
   if (!visible || isMobile.value) return;
   await nextTick();
   handleToolPanelViewportResize();
 });
+
+watch(
+  () => toolPanelStore.workspaceDiff,
+  (workspaceDiff) => {
+    if (workspaceDiff) showToolPanel.value = true;
+  },
+);
+
+watch(
+  () => filesStore.previewFile,
+  (previewFile) => {
+    if (previewFile) showToolPanel.value = true;
+  },
+);
 
 const showRenameModal = ref(false);
 const renameValue = ref("");
@@ -311,6 +436,7 @@ const activeSessionTitle = computed(
 const activeSessionModelLabel = computed(() => {
   const session = chatStore.activeSession;
   if (!session?.model) return t("models.selectModel");
+  if (session.provider === "moa") return `MoA · ${session.model}`;
   return appStore.displayModelName(session.model, session.provider);
 });
 
@@ -326,6 +452,7 @@ const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
 const newChatProvider = ref<string>("");
 const newChatModel = ref<string>("");
+const newChatModelKind = ref<"model" | "moa">("model");
 const newChatBaseUrl = ref<string>("");
 const newChatApiKey = ref<string>("");
 const newChatApiMode = ref<CodingAgentApiMode>("codex_responses");
@@ -425,8 +552,6 @@ const hiddenDefaultWorkspaces = computed(() => {
   return defaultWorkspaces.value.filter(ws => !visible.has(ws));
 });
 
-const CODING_AGENT_AUTH_PROVIDER_KEYS = new Set(["openai-codex", "copilot", "xai-oauth", "nous", "google-gemini-cli", "claude-oauth"]);
-
 const showEkkoAgentEntry = import.meta.env.DEV;
 const newChatAgentOptions = computed(() => {
   const options = [
@@ -456,14 +581,11 @@ function getModelGroupsForProfile(profile: string) {
   return profileModels?.groups || [];
 }
 
-function isCodingAgentAuthProvider(provider?: string) {
-  return CODING_AGENT_AUTH_PROVIDER_KEYS.has(String(provider || "").toLowerCase());
-}
-
 function isNewChatProviderAllowed(group: AvailableModelGroup) {
+  if (group.provider === "moa") return newChatAgent.value === "hermes";
   const mode = newChatAgent.value === "ekko-agent" ? "scoped" : newChatAgentMode.value;
   if (!(newChatAgent.value !== "hermes" && mode === "scoped")) return true;
-  return !isCodingAgentAuthProvider(group.provider);
+  return canScopedCodingAgentUseProvider(newChatAgent.value as ChatCodingAgentId, group.provider);
 }
 
 function getSelectableModelGroupsForProfile(profile: string) {
@@ -512,8 +634,19 @@ const newChatProfileOptions = computed(() =>
 );
 
 const newChatModelGroups = computed(() => {
-  return getSelectableModelGroupsForProfile(newChatProfile.value);
+  const groups = getSelectableModelGroupsForProfile(newChatProfile.value);
+  return newChatModelKind.value === "moa"
+    ? groups.filter((group) => group.provider === "moa")
+    : groups.filter((group) => group.provider !== "moa");
 });
+
+const newChatMoaGroup = computed(() =>
+  getSelectableModelGroupsForProfile(newChatProfile.value).find((group) => group.provider === "moa"),
+);
+
+const newChatCanUseMoa = computed(() =>
+  newChatAgent.value === "hermes" && Boolean(newChatMoaGroup.value?.models.length),
+);
 
 const newChatProviderOptions = computed(() =>
   newChatModelGroups.value.map((group) => ({
@@ -548,8 +681,14 @@ const newChatUsesProviderModel = computed(() => !isNewChatGlobalCodingAgent.valu
 const newChatNeedsBaseUrl = computed(() =>
   isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.base_url,
 );
+const newChatUsesServerAuth = computed(() =>
+  usesServerManagedProviderAuth(newChatAgent.value as ChatCodingAgentId, selectedNewChatProviderGroup.value?.provider),
+);
 const newChatNeedsApiKey = computed(() =>
-  isNewChatCodingAgent.value && effectiveNewChatAgentMode.value === "scoped" && !selectedNewChatProviderGroup.value?.api_key,
+  isNewChatCodingAgent.value &&
+  effectiveNewChatAgentMode.value === "scoped" &&
+  !newChatUsesServerAuth.value &&
+  !selectedNewChatProviderGroup.value?.api_key,
 );
 const canConfirmNewChat = computed(() => {
   if (!newChatProfile.value) return false;
@@ -577,8 +716,37 @@ function syncNewChatApiMode() {
 
 function syncNewChatModelSelection() {
   const defaults = getDefaultModelForProfile(newChatProfile.value);
+  newChatModelKind.value = defaults.provider === "moa" && newChatAgent.value === "hermes"
+    ? "moa"
+    : "model";
   newChatProvider.value = defaults.provider;
   newChatModel.value = defaults.model;
+  newChatBaseUrl.value = "";
+  newChatApiKey.value = "";
+  syncNewChatApiMode();
+}
+
+function handleNewChatModelKindChange(value: "model" | "moa") {
+  if (value === "moa") {
+    const group = newChatMoaGroup.value;
+    if (!group?.models.length) return;
+    newChatModelKind.value = "moa";
+    newChatProvider.value = "moa";
+    newChatModel.value = group.models[0];
+  } else {
+    newChatModelKind.value = "model";
+    const groups = getSelectableModelGroupsForProfile(newChatProfile.value)
+      .filter((group) => group.provider !== "moa");
+    const profileModels = appStore.profileModelGroups.find(
+      (entry) => entry.profile === newChatProfile.value,
+    );
+    const defaultGroup = groups.find((group) => group.provider === profileModels?.default_provider);
+    const group = defaultGroup || groups.find((item) => item.models.length > 0);
+    newChatProvider.value = group?.provider || "";
+    newChatModel.value = group?.models.includes(profileModels?.default || "")
+      ? profileModels?.default || ""
+      : group?.models[0] || "";
+  }
   newChatBaseUrl.value = "";
   newChatApiKey.value = "";
   syncNewChatApiMode();
@@ -1044,6 +1212,7 @@ const showSessionModelModal = ref(false);
 const showSessionModelModeModal = ref(false);
 const sessionModelSessionId = ref<string | null>(null);
 const sessionModelSearch = ref("");
+const sessionModelKind = ref<"model" | "moa">("model");
 const sessionModelCollapsedGroups = ref<Record<string, boolean>>({});
 const sessionModelValue = ref("");
 const sessionModelProvider = ref("");
@@ -1051,6 +1220,7 @@ const sessionModelCustomInput = ref("");
 const sessionModelCustomProvider = ref("");
 const sessionModelApiMode = ref<CodingAgentApiMode>("codex_responses");
 const pendingSessionModelSwitch = ref<{ model: string; provider: string } | null>(null);
+const sessionModelSwitching = ref(false);
 
 const sessionModelProfile = computed<string | null>(() => {
   const session = chatStore.sessions.find((s) => s.id === sessionModelSessionId.value);
@@ -1081,12 +1251,32 @@ const isSessionModelExternalCodingAgent = computed(() =>
   (sessionModelCodingAgentId.value === "claude-code" || sessionModelCodingAgentId.value === "codex"),
 );
 
-const sessionModelBaseGroups = computed(() =>
+const isSessionModelCodingAgent = computed(() =>
+  sessionModelSession.value?.source === "coding_agent" || Boolean(sessionModelSession.value?.codingAgentId),
+);
+
+const sessionModelAllGroups = computed(() =>
   sessionModelProfile.value
     ? getModelGroupsForProfile(sessionModelProfile.value).filter((group) => (
-        !isSessionModelScopedCodingAgent.value || !isCodingAgentAuthProvider(group.provider)
+        group.provider === "moa"
+          ? !isSessionModelCodingAgent.value
+          : (!isSessionModelScopedCodingAgent.value ||
+            !sessionModelCodingAgentId.value ||
+            canScopedCodingAgentUseProvider(sessionModelCodingAgentId.value, group.provider))
       ))
     : [],
+);
+
+const sessionModelBaseGroups = computed(() =>
+  sessionModelAllGroups.value.filter((group) => group.provider !== "moa"),
+);
+
+const sessionMoaGroup = computed(() =>
+  sessionModelAllGroups.value.find((group) => group.provider === "moa"),
+);
+
+const sessionCanUseMoa = computed(() =>
+  !isSessionModelCodingAgent.value && Boolean(sessionMoaGroup.value?.models.length),
 );
 
 const sessionModelProviderOptions = computed(() =>
@@ -1119,6 +1309,12 @@ const filteredSessionModelGroups = computed(() => {
     .filter((group) => group.models.length > 0 || group.label.toLowerCase().includes(query));
 });
 
+const filteredSessionMoaModels = computed(() => {
+  const models = sessionMoaGroup.value?.models || [];
+  const query = sessionModelSearch.value.trim().toLowerCase();
+  return query ? models.filter((model) => model.toLowerCase().includes(query)) : models;
+});
+
 async function openSessionModelModal(sessionId: string) {
   if (appStore.modelGroups.length === 0 && appStore.profileModelGroups.length === 0) {
     await appStore.loadModels();
@@ -1138,13 +1334,25 @@ async function openSessionModelModal(sessionId: string) {
       ? session?.model || ""
       : fallbackGroup?.models[0] || "",
   };
-  sessionModelValue.value = providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
-  sessionModelProvider.value = providerGroup ? session?.provider || "" : defaults.provider || "";
-  sessionModelCustomProvider.value = sessionModelProvider.value;
+  const usesMoa = session?.provider === "moa" && sessionCanUseMoa.value;
+  sessionModelKind.value = usesMoa ? "moa" : "model";
+  sessionModelValue.value = usesMoa
+    ? session?.model || ""
+    : providerGroup ? session?.model || defaults.model || "" : defaults.model || "";
+  sessionModelProvider.value = usesMoa
+    ? "moa"
+    : providerGroup ? session?.provider || "" : defaults.provider || "";
+  sessionModelCustomProvider.value = usesMoa ? defaults.provider : sessionModelProvider.value;
   sessionModelSearch.value = "";
   sessionModelCustomInput.value = "";
   sessionModelCollapsedGroups.value = {};
   showSessionModelModal.value = true;
+}
+
+function handleSessionModelKindChange(value: "model" | "moa") {
+  if (sessionModelSwitching.value || (value === "moa" && !sessionCanUseMoa.value)) return;
+  sessionModelKind.value = value;
+  sessionModelSearch.value = "";
 }
 
 function handleHeaderModelClick() {
@@ -1161,6 +1369,7 @@ function isSessionModelGroupCollapsed(provider: string) {
 }
 
 function toggleSessionModelGroup(provider: string) {
+  if (sessionModelSwitching.value) return;
   sessionModelCollapsedGroups.value[provider] = !sessionModelCollapsedGroups.value[provider];
 }
 
@@ -1187,24 +1396,29 @@ function defaultSessionModelApiMode(provider: string): CodingAgentApiMode {
 }
 
 async function applySessionModelSwitch(model: string, provider: string, apiMode?: CodingAgentApiMode) {
-  if (!sessionModelSessionId.value) return;
-  const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
-  if (ok) {
-    sessionModelValue.value = model;
-    sessionModelProvider.value = provider;
-    if (apiMode) sessionModelApiMode.value = apiMode;
-    pendingSessionModelSwitch.value = null;
-    showSessionModelModeModal.value = false;
-    showSessionModelModal.value = false;
-    message.success(t("chat.modelSet"));
-  } else {
-    message.error(t("chat.modelSetFailed"));
+  if (!sessionModelSessionId.value || sessionModelSwitching.value) return;
+  sessionModelSwitching.value = true;
+  try {
+    const ok = await chatStore.switchSessionModel(model, provider, sessionModelSessionId.value, apiMode);
+    if (ok) {
+      sessionModelValue.value = model;
+      sessionModelProvider.value = provider;
+      if (apiMode) sessionModelApiMode.value = apiMode;
+      pendingSessionModelSwitch.value = null;
+      showSessionModelModeModal.value = false;
+      showSessionModelModal.value = false;
+      message.success(t("chat.modelSet"));
+    } else {
+      message.error(t("chat.modelSetFailed"));
+    }
+  } finally {
+    sessionModelSwitching.value = false;
   }
 }
 
 async function selectSessionModel(model: string, provider: string) {
   const meta = sessionModelBaseGroups.value.find((group) => group.provider === provider)?.model_meta?.[model];
-  if (meta?.disabled || !sessionModelSessionId.value) return;
+  if (meta?.disabled || !sessionModelSessionId.value || sessionModelSwitching.value) return;
   if (isSessionModelExternalCodingAgent.value) {
     pendingSessionModelSwitch.value = { model, provider };
     sessionModelApiMode.value = sessionModelSession.value?.provider === provider && sessionModelSession.value.apiMode
@@ -1216,6 +1430,11 @@ async function selectSessionModel(model: string, provider: string) {
   await applySessionModelSwitch(model, provider);
 }
 
+async function selectSessionMoaPreset(preset: string) {
+  if (!preset || sessionModelSwitching.value) return;
+  await applySessionModelSwitch(preset, "moa");
+}
+
 async function confirmSessionModelMode() {
   const pending = pendingSessionModelSwitch.value;
   if (!pending) return;
@@ -1223,6 +1442,7 @@ async function confirmSessionModelMode() {
 }
 
 function cancelSessionModelMode() {
+  if (sessionModelSwitching.value) return;
   pendingSessionModelSwitch.value = null;
   showSessionModelModeModal.value = false;
 }
@@ -1230,7 +1450,7 @@ function cancelSessionModelMode() {
 async function handleSessionModelCustomSubmit() {
   const model = sessionModelCustomInput.value.trim();
   const provider = sessionModelCustomProvider.value;
-  if (!model || !provider) return;
+  if (!model || !provider || sessionModelSwitching.value) return;
   await selectSessionModel(model, provider);
 }
 </script>
@@ -1496,16 +1716,32 @@ async function handleSessionModelCustomSubmit() {
       preset="card"
       :title="t('chat.setModelTitle')"
       :style="{ width: 'min(480px, calc(100vw - 32px))' }"
-      :mask-closable="true"
+      :mask-closable="!sessionModelSwitching"
+      :close-on-esc="!sessionModelSwitching"
+      :closable="!sessionModelSwitching"
     >
-      <NInput
-        v-model:value="sessionModelSearch"
-        :placeholder="t('models.searchPlaceholder')"
-        clearable
-        size="small"
-        class="session-model-search"
-      />
-      <div class="session-model-list">
+      <NSpin :show="sessionModelSwitching" class="session-model-switch-spin">
+        <template #description>{{ t('chat.modelSwitching') }}</template>
+        <div v-if="sessionCanUseMoa" class="session-model-kind-field">
+          <span class="session-model-kind-label">{{ t('chat.modelType') }}</span>
+          <NRadioGroup
+            :value="sessionModelKind"
+            name="session-model-kind"
+            @update:value="handleSessionModelKindChange"
+          >
+            <NRadioButton value="model">{{ t('chat.standardModels') }}</NRadioButton>
+            <NRadioButton value="moa">{{ t('chat.moaPresets') }}</NRadioButton>
+          </NRadioGroup>
+        </div>
+        <NInput
+          v-model:value="sessionModelSearch"
+          :placeholder="t('models.searchPlaceholder')"
+          :disabled="sessionModelSwitching"
+          clearable
+          size="small"
+          class="session-model-search"
+        />
+        <div v-if="sessionModelKind === 'model'" class="session-model-list" :aria-busy="sessionModelSwitching">
         <div v-for="group in filteredSessionModelGroups" :key="group.provider" class="session-model-group">
           <div class="session-model-group-header" @click="toggleSessionModelGroup(group.provider)">
             <svg
@@ -1533,7 +1769,9 @@ async function handleSessionModelCustomSubmit() {
               :class="{
                 active: model === sessionModelValue && group.provider === sessionModelProvider,
                 disabled: !!group.model_meta?.[model]?.disabled,
+                switching: sessionModelSwitching,
               }"
+              :aria-disabled="sessionModelSwitching || !!group.model_meta?.[model]?.disabled"
               :title="group.model_meta?.[model]?.disabled ? t('models.disabledTooltip') : ''"
               @click="selectSessionModel(model, group.provider)"
             >
@@ -1571,12 +1809,14 @@ async function handleSessionModelCustomSubmit() {
             <NSelect
               v-model:value="sessionModelCustomProvider"
               :options="sessionModelProviderOptions"
+              :disabled="sessionModelSwitching"
               size="small"
               class="session-model-custom-provider"
             />
             <NInput
               v-model:value="sessionModelCustomInput"
               :placeholder="t('models.customModelPlaceholder')"
+              :disabled="sessionModelSwitching"
               size="small"
               class="session-model-custom-input"
               @keydown.enter="handleSessionModelCustomSubmit"
@@ -1586,26 +1826,66 @@ async function handleSessionModelCustomSubmit() {
             {{ t('models.customModelHint') }}
           </div>
         </div>
-      </div>
+        </div>
+        <div v-else class="session-model-list" :aria-busy="sessionModelSwitching">
+          <div class="session-model-group-items session-moa-items">
+            <div
+              v-for="preset in filteredSessionMoaModels"
+              :key="preset"
+              class="session-model-item"
+              :class="{
+                active: preset === sessionModelValue && sessionModelProvider === 'moa',
+                switching: sessionModelSwitching,
+              }"
+              :aria-disabled="sessionModelSwitching"
+              @click="selectSessionMoaPreset(preset)"
+            >
+              <span class="session-model-item-label">
+                <span class="session-model-item-name">{{ preset }}</span>
+              </span>
+              <svg
+                v-if="preset === sessionModelValue && sessionModelProvider === 'moa'"
+                class="session-model-check"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+          <div v-if="filteredSessionMoaModels.length === 0" class="session-model-empty">
+            {{ t('chat.noMoaPresets') }}
+          </div>
+        </div>
+      </NSpin>
     </NModal>
 
     <NModal
       v-model:show="showSessionModelModeModal"
       preset="dialog"
       :title="t('codingAgents.protocolScope')"
-      :mask-closable="true"
+      :mask-closable="!sessionModelSwitching"
+      :close-on-esc="!sessionModelSwitching"
+      :closable="!sessionModelSwitching"
       style="width: min(420px, calc(100vw - 32px))"
     >
       <NSelect
         v-model:value="sessionModelApiMode"
         :options="newChatApiModeOptions"
+        :disabled="sessionModelSwitching"
       />
       <template #action>
-        <NButton size="small" @click="cancelSessionModelMode">
+        <NButton size="small" :disabled="sessionModelSwitching" @click="cancelSessionModelMode">
           {{ t('common.cancel') }}
         </NButton>
-        <NButton size="small" type="primary" @click="confirmSessionModelMode">
-          {{ t('common.confirm') }}
+        <NButton size="small" type="primary" :loading="sessionModelSwitching" @click="confirmSessionModelMode">
+          {{ sessionModelSwitching ? t('chat.modelSwitching') : t('common.confirm') }}
         </NButton>
       </template>
     </NModal>
@@ -1648,7 +1928,18 @@ async function handleSessionModelCustomSubmit() {
               @update:value="handleNewChatProfileChange"
             />
           </label>
-          <label v-if="newChatUsesProviderModel" class="new-chat-field">
+          <label v-if="newChatUsesProviderModel && newChatCanUseMoa" class="new-chat-field">
+            <span class="new-chat-label">{{ t('chat.modelType') }}</span>
+            <NRadioGroup
+              :value="newChatModelKind"
+              name="new-chat-model-kind"
+              @update:value="handleNewChatModelKindChange"
+            >
+              <NRadioButton value="model">{{ t('chat.standardModels') }}</NRadioButton>
+              <NRadioButton value="moa">{{ t('chat.moaPresets') }}</NRadioButton>
+            </NRadioGroup>
+          </label>
+          <label v-if="newChatUsesProviderModel && newChatModelKind === 'model'" class="new-chat-field">
             <span class="new-chat-label">{{ t("models.provider") }}</span>
             <NSelect
               :value="newChatProvider"
@@ -1658,7 +1949,9 @@ async function handleSessionModelCustomSubmit() {
             />
           </label>
           <label v-if="newChatUsesProviderModel" class="new-chat-field">
-            <span class="new-chat-label">{{ t("models.models") }}</span>
+            <span class="new-chat-label">
+              {{ newChatModelKind === 'moa' ? t('chat.moaPresets') : t('models.models') }}
+            </span>
             <NSelect
               v-model:value="newChatModel"
               :options="newChatModelOptions"
@@ -1786,7 +2079,10 @@ async function handleSessionModelCustomSubmit() {
       </NDrawerContent>
     </NDrawer>
 
-    <div class="chat-main">
+    <div
+      class="chat-main"
+      :class="{ 'chat-main--sidebar-collapsed': currentMode !== 'chat' || !showSessions }"
+    >
       <header class="chat-header">
         <div class="header-left">
           <NButton
@@ -1842,7 +2138,7 @@ async function handleSessionModelCustomSubmit() {
                   :class="{ active: showToolPanel }"
                   quaternary
                   size="small"
-                  @click="showToolPanel = !showToolPanel"
+                  @click="toggleToolPanel"
                   circle
                 >
                   <template #icon>
@@ -1928,12 +2224,16 @@ async function handleSessionModelCustomSubmit() {
           @dragleave="handleChatDragLeave"
           @drop="handleChatDrop"
         >
-          <div class="chat-main-content">
-            <MessageList ref="messageListRef" />
+          <div ref="chatMainContentRef" class="chat-main-content">
+            <MessageList
+              ref="messageListRef"
+              :approval-portal-to-body="showRealtimeVoice"
+            />
             <ChatInput
               ref="chatInputRef"
               :model-label="activeSessionModelLabel"
               @model-click="handleHeaderModelClick"
+              @voice-click="openRealtimeVoice"
             />
           </div>
           <OutlinePanel
@@ -1951,39 +2251,49 @@ async function handleSessionModelCustomSubmit() {
               @pointerdown="startToolResize"
             />
             <div class="chat-tool-panel-inner">
-              <div class="chat-tool-tabs" role="tablist">
-                <button
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'files' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'files'"
-                  @click="activeToolPanel = 'files'"
-                >
-                  {{ t("drawer.files") }}
-                </button>
-                <button
-                  class="chat-tool-tab"
-                  :class="{ active: activeToolPanel === 'terminal' }"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeToolPanel === 'terminal'"
-                  @click="activeToolPanel = 'terminal'"
-                >
-                  {{ t("drawer.terminal") }}
-                </button>
-              </div>
-              <div class="chat-tool-content">
-                <FilesPanel
-                  v-show="activeToolPanel === 'files'"
-                  :workspace-session-id="activeWorkspaceSessionId"
-                  :workspace="activeWorkspacePath"
-                />
-                <TerminalPanel
-                  v-show="activeToolPanel === 'terminal'"
-                  :visible="showToolPanel && activeToolPanel === 'terminal'"
-                />
-              </div>
+              <WorkspaceDiffPreview
+                v-if="toolPanelStore.workspaceDiff"
+                :custom-close="closeToolPanelOverlay"
+              />
+              <FilePreview
+                v-else-if="filesStore.previewFile"
+                :custom-close="closeToolPanelOverlay"
+              />
+              <template v-else>
+                <div class="chat-tool-tabs" role="tablist">
+                  <button
+                    class="chat-tool-tab"
+                    :class="{ active: activeToolPanel === 'files' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="activeToolPanel === 'files'"
+                    @click="activeToolPanel = 'files'"
+                  >
+                    {{ t("drawer.files") }}
+                  </button>
+                  <button
+                    class="chat-tool-tab"
+                    :class="{ active: activeToolPanel === 'terminal' }"
+                    type="button"
+                    role="tab"
+                    :aria-selected="activeToolPanel === 'terminal'"
+                    @click="activeToolPanel = 'terminal'"
+                  >
+                    {{ t("drawer.terminal") }}
+                  </button>
+                </div>
+                <div class="chat-tool-content">
+                  <FilesPanel
+                    v-show="activeToolPanel === 'files'"
+                    :workspace-session-id="activeWorkspaceSessionId"
+                    :workspace="activeWorkspacePath"
+                  />
+                  <TerminalPanel
+                    v-show="activeToolPanel === 'terminal'"
+                    :visible="showToolPanel && activeToolPanel === 'terminal'"
+                  />
+                </div>
+              </template>
             </div>
           </aside>
         </div>
@@ -1993,6 +2303,12 @@ async function handleSessionModelCustomSubmit() {
         :human-only="sessionBrowserPrefsStore.humanOnly"
       />
     </div>
+    <Teleport to="body">
+      <RealtimeVoiceStage
+        v-if="showRealtimeVoice"
+        @close="closeRealtimeVoice"
+      />
+    </Teleport>
   </div>
 </template>
 
@@ -2006,10 +2322,28 @@ async function handleSessionModelCustomSubmit() {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  background-color: $bg-card;
 }
 
 .session-model-search {
   margin-bottom: 12px;
+}
+
+.session-model-kind-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.session-model-kind-label {
+  font-size: 12px;
+  color: $text-muted;
+  font-weight: 500;
+}
+
+.session-model-switch-spin {
+  min-height: 180px;
 }
 
 .session-model-list {
@@ -2063,6 +2397,10 @@ async function handleSessionModelCustomSubmit() {
   padding-left: 8px;
 }
 
+.session-moa-items {
+  padding-left: 0;
+}
+
 .session-model-item {
   display: flex;
   align-items: center;
@@ -2092,6 +2430,10 @@ async function handleSessionModelCustomSubmit() {
       background-color: transparent;
       color: $text-secondary;
     }
+  }
+
+  &.switching {
+    cursor: wait;
   }
 }
 
@@ -2190,7 +2532,13 @@ async function handleSessionModelCustomSubmit() {
 
 .session-list {
   width: $sidebar-width;
-  border-right: 1px solid $border-color;
+  min-height: 0;
+  align-self: stretch;
+  margin: 10px;
+  background: $bg-sidebar-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -2201,23 +2549,26 @@ async function handleSessionModelCustomSubmit() {
 
   &.collapsed {
     width: 0;
-    border-right: none;
+    margin-left: 0;
+    margin-right: 0;
+    border: none;
+    box-shadow: none;
     opacity: 0;
     pointer-events: none;
   }
 
   @media (max-width: $breakpoint-mobile) {
     position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    height: auto;
+    margin: 0;
     z-index: 120;
-    background: $bg-card;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
     width: $sidebar-width;
 
     &.collapsed {
-      transform: translateX(-100%);
+      transform: translateX(calc(-100% - 10px));
       opacity: 0;
     }
   }
@@ -2551,6 +2902,22 @@ async function handleSessionModelCustomSubmit() {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  margin: 10px 10px 10px 0;
+  background: $bg-main-surface;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  &--sidebar-collapsed {
+    margin-left: 10px;
+  }
+
+  @media (max-width: $breakpoint-mobile) {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 .chat-content-wrapper {
@@ -2579,7 +2946,7 @@ async function handleSessionModelCustomSubmit() {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background-color: $bg-card;
+  background-color: $bg-main-surface;
   animation: chat-surface-fade-in 1.5s ease both;
 }
 

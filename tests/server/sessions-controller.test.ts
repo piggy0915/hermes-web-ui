@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, symlink } from 'fs/promises'
+import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -8,6 +8,7 @@ const getConversationDetailFromDbMock = vi.fn()
 const listConversationSummariesMock = vi.fn()
 const getConversationDetailMock = vi.fn()
 const listSessionSummariesMock = vi.fn()
+const listSessionSummaryGroupsMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
 const getSessionDetailFromDbWithProfileMock = vi.fn()
 const getExactSessionDetailFromDbWithProfileMock = vi.fn()
@@ -65,6 +66,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   listSessionSummaries: listSessionSummariesMock,
+  listSessionSummaryGroups: listSessionSummaryGroupsMock,
   searchSessionSummaries: vi.fn(),
   getSessionDetailFromDb: getSessionDetailFromDbMock,
   getSessionDetailFromDbWithProfile: getSessionDetailFromDbWithProfileMock,
@@ -153,6 +155,7 @@ describe('session conversations controller', () => {
     listConversationSummariesMock.mockReset()
     getConversationDetailMock.mockReset()
     listSessionSummariesMock.mockReset()
+    listSessionSummaryGroupsMock.mockReset()
     getSessionDetailFromDbMock.mockReset()
     getSessionDetailFromDbWithProfileMock.mockReset()
     getExactSessionDetailFromDbWithProfileMock.mockReset()
@@ -232,6 +235,111 @@ describe('session conversations controller', () => {
     expect(localListSessionsMock).toHaveBeenCalledWith(undefined, undefined, 5)
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
     expect(ctx.body.sessions[0]).toMatchObject({ id: 'local-conversation', source: 'cli', title: 'Local' })
+  })
+
+  it('serves bounded workspace preview bytes and blocks traversal, escaped links, and unauthorized profiles', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'hermes-workspace-preview-'))
+    const outside = await mkdtemp(join(tmpdir(), 'hermes-workspace-preview-outside-'))
+    const hermesArtifactWorkspace = '/tmp/hermes-test/research/workspace'
+    try {
+      const pdfBytes = Buffer.from('%PDF-1.7\npreview')
+      await writeFile(join(workspace, 'report.pdf'), pdfBytes)
+      await writeFile(join(outside, 'secret.pdf'), Buffer.from('%PDF secret'))
+      await symlink(join(outside, 'secret.pdf'), join(workspace, 'escaped.pdf'))
+      await writeFile(join(workspace, 'large.pdf'), Buffer.alloc(0))
+      await truncate(join(workspace, 'large.pdf'), 50 * 1024 * 1024 + 1)
+      await mkdir(hermesArtifactWorkspace, { recursive: true })
+      const artifactPath = join(hermesArtifactWorkspace, 'generated.py')
+      await writeFile(artifactPath, 'print("generated")\n')
+      getSessionMock.mockReturnValue({
+        id: 'session-preview',
+        workspace,
+        profile: 'research',
+      })
+
+      const headers: Record<string, string> = {}
+      const successCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'report.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        set: (name: string, value: string) => { headers[name] = value },
+        body: null,
+      }
+      const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+      await mod.readWorkspaceFileContent(successCtx)
+
+      expect(successCtx.body).toEqual(pdfBytes)
+      expect(headers).toMatchObject({
+        'Content-Type': 'application/pdf',
+        'Content-Length': String(pdfBytes.length),
+        'Cache-Control': 'no-store, max-age=0',
+        'X-Content-Type-Options': 'nosniff',
+      })
+      expect(headers['Content-Disposition']).toContain('inline;')
+
+      const artifactHeaders: Record<string, string> = {}
+      const artifactCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: artifactPath, text: '1' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        set: (name: string, value: string) => { artifactHeaders[name] = value },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(artifactCtx)
+      expect(artifactCtx.body.toString('utf8')).toBe('print("generated")\n')
+      expect(artifactHeaders['Content-Type']).toBe('text/plain; charset=utf-8')
+
+      const absoluteOutsideCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: join(outside, 'secret.pdf') },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(absoluteOutsideCtx)
+      expect(absoluteOutsideCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const traversalCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: '../secret.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(traversalCtx)
+      expect(traversalCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const escapedCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'escaped.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(escapedCtx)
+      expect(escapedCtx).toMatchObject({ status: 400, body: { code: 'invalid_path' } })
+
+      const oversizedCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'large.pdf' },
+        state: { user: { id: 1, role: 'super_admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(oversizedCtx)
+      expect(oversizedCtx).toMatchObject({ status: 413, body: { code: 'file_too_large' } })
+
+      listUserProfilesMock.mockReturnValue([{ profile_name: 'travel' }])
+      const forbiddenCtx: any = {
+        params: { id: 'session-preview' },
+        query: { path: 'report.pdf' },
+        state: { user: { id: 2, role: 'admin' } },
+        body: null,
+      }
+      await mod.readWorkspaceFileContent(forbiddenCtx)
+      expect(forbiddenCtx.status).toBe(403)
+      expect(forbiddenCtx.body.error).toContain('research')
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+      await rm(hermesArtifactWorkspace, { recursive: true, force: true })
+    }
   })
 
   it('lists Windows drive roots for the workspace folder picker', async () => {
@@ -839,6 +947,88 @@ describe('session conversations controller', () => {
     ])
   })
 
+  it('returns the first page of every Hermes history source group', async () => {
+    localListSessionsMock.mockReturnValue([])
+    listSessionSummaryGroupsMock.mockResolvedValue({
+      groups: [
+        {
+          source: 'cli',
+          sessions: [
+            { id: 'cli-1', source: 'cli', started_at: 3, last_active: 3 },
+            { id: 'cli-2', source: 'cli', started_at: 2, last_active: 2 },
+          ],
+          total: 3,
+          hasMore: true,
+        },
+        {
+          source: 'weixin',
+          sessions: [{ id: 'wx-1', source: 'weixin', started_at: 1, last_active: 1 }],
+          total: 1,
+          hasMore: false,
+        },
+        {
+          source: 'api_server',
+          sessions: [{ id: 'api-1', source: 'api_server', started_at: 4, last_active: 4 }],
+          total: 1,
+          hasMore: false,
+        },
+      ],
+      included: [{ id: 'cli-pinned', source: 'cli', started_at: 1, last_active: 1 }],
+    })
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'travel', limit: '2', include: ['cli-pinned'] },
+      state: {},
+      body: null,
+    }
+
+    await mod.listHermesSessionGroups(ctx)
+
+    expect(listSessionSummaryGroupsMock).toHaveBeenCalledWith(2, 'travel', ['cli-pinned'])
+    expect(ctx.body).toEqual({
+      groups: [
+        expect.objectContaining({ source: 'cli', hasMore: true, sessions: [expect.objectContaining({ id: 'cli-1' }), expect.objectContaining({ id: 'cli-2' })] }),
+        expect.objectContaining({ source: 'weixin', hasMore: false, sessions: [expect.objectContaining({ id: 'wx-1' })] }),
+        expect.objectContaining({ source: 'api_server', hasMore: false, sessions: [expect.objectContaining({ id: 'api-1' })] }),
+      ],
+      included: [expect.objectContaining({ id: 'cli-pinned', profile: 'travel' })],
+    })
+  })
+
+  it('paginates one Hermes history source without mixing other local sources', async () => {
+    localListSessionsMock.mockReturnValue([
+      { id: 'cli-local', source: 'cli', started_at: 4, last_active: 4 },
+    ])
+    listSessionSummariesMock.mockResolvedValue([
+      { id: 'cli-1', source: 'cli', started_at: 5, last_active: 5 },
+      { id: 'cli-2', source: 'cli', started_at: 3, last_active: 3 },
+      { id: 'cli-3', source: 'cli', started_at: 2, last_active: 2 },
+      { id: 'cli-4', source: 'cli', started_at: 1, last_active: 1 },
+    ])
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = {
+      query: { profile: 'travel', source: 'cli', offset: '1', limit: '2' },
+      state: {},
+      body: null,
+    }
+
+    await mod.listHermesSessions(ctx)
+
+    expect(localListSessionsMock).toHaveBeenCalledWith('travel', 'cli', 4)
+    expect(listSessionSummariesMock).toHaveBeenCalledWith('cli', 4, 'travel')
+    expect(ctx.body).toMatchObject({
+      sessions: [
+        expect.objectContaining({ id: 'cli-local' }),
+        expect.objectContaining({ id: 'cli-2' }),
+      ],
+      hasMore: true,
+      offset: 1,
+      limit: 2,
+    })
+  })
+
   it('keeps archived coding-agent sessions visible in Hermes history', async () => {
     localListSessionsMock.mockReturnValue([{
       id: 'codex-archived',
@@ -1124,7 +1314,7 @@ describe('session conversations controller', () => {
     })
   })
 
-  it('does not return api_server sessions from the Hermes history detail endpoint', async () => {
+  it('returns api_server sessions from the local store in Hermes history', async () => {
     localGetSessionDetailMock.mockReturnValue({
       id: 'api-1',
       source: 'api_server',
@@ -1139,9 +1329,14 @@ describe('session conversations controller', () => {
     await mod.getHermesSession(ctx)
 
     expect(localGetSessionDetailMock).toHaveBeenCalledWith('api-1')
-    expect(getSessionDetailFromDbMock).toHaveBeenCalledWith('api-1')
-    expect(ctx.status).toBe(404)
-    expect(ctx.body).toEqual({ error: 'Session not found' })
+    expect(getSessionDetailFromDbMock).not.toHaveBeenCalled()
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect(ctx.body.session).toMatchObject({
+      id: 'api-1',
+      source: 'api_server',
+      title: 'API Server',
+      messages: [{ content: 'local api' }],
+    })
   })
 
   it('merges local usage with only state.db sessions missing from the local ledger', async () => {

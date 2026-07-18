@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
-import MarkdownRenderer from '../chat/MarkdownRenderer.vue'
 import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import { useProfilesStore } from '@/stores/hermes/profiles'
 import {
@@ -19,6 +18,14 @@ import { speedToEdgeRate, hzToEdgePitch } from '@/utils/ttsHelpers'
 import { getDownloadUrl } from '@/api/hermes/download'
 import { formatChatTimestamp } from '@/utils/chat-timestamp'
 import type { ChatMessage, RoomAgent, MemberInfo } from '@/api/hermes/group-chat'
+import { useGroupChatStore } from '@/stores/hermes/group-chat'
+import { formatReferencedContentForDisplay, parseMessageReference } from '@/stores/hermes/chat'
+import { isPreviewableFile } from '@/utils/hermes/file-preview'
+import ToolChangeCard from '@/components/hermes/chat/ToolChangeCard.vue'
+import { useFilesStore } from '@/stores/hermes/files'
+import { useToolPanelStore } from '@/stores/hermes/tool-panel'
+
+const MarkdownRenderer = defineAsyncComponent(async () => (await import('../chat/MarkdownRenderer.vue')).default)
 
 const TOOL_PAYLOAD_DISPLAY_LIMIT = 1000
 const JSON_STRING_DISPLAY_LIMIT = 200
@@ -27,6 +34,15 @@ const JSON_MAX_NODES = 1000
 const JSON_MAX_KEYS_PER_OBJECT = 50
 const JSON_MAX_ITEMS_PER_ARRAY = 50
 const JSON_TRUNCATED_KEY = '__truncated__'
+
+interface GroupWorkspaceDiffFile {
+    id: string | number
+    path: string
+    additions: number
+    deletions: number
+    binary?: boolean
+    patch?: string | null
+}
 
 const props = defineProps<{
     message: ChatMessage
@@ -37,7 +53,10 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const toast = useMessage()
+const groupChatStore = useGroupChatStore()
 const profilesStore = useProfilesStore()
+const filesStore = useFilesStore()
+const toolPanelStore = useToolPanelStore()
 const speech = useGlobalSpeech()
 const voiceSettings = useVoiceSettings()
 const previewUrl = ref<string | null>(null)
@@ -153,6 +172,7 @@ const renderedAttachments = computed(() => {
             type: block.type === 'image' ? String(block.media_type || 'image/*') : String(block.media_type || 'application/octet-stream'),
             size: 0,
             url: getDownloadUrl(normalizeLocalFilePath(path), name),
+            path: normalizeLocalFilePath(path),
         }]
     })
 })
@@ -166,10 +186,32 @@ const displayBody = computed(() => {
         .map((block: any) => block.text)
         .join('\n')
 })
+const parsedMessageReference = computed(() =>
+    props.message.role !== 'assistant' && props.message.role !== 'tool'
+        ? parseMessageReference(displayBody.value)
+        : null,
+)
+const referencedContentMarkdown = computed(() =>
+    parsedMessageReference.value
+        ? formatReferencedContentForDisplay(parsedMessageReference.value.content)
+        : '',
+)
 const copyableContent = computed(() => {
     if (isToolMessage.value) return null
+    if (parsedMessageReference.value) {
+        return [referencedContentMarkdown.value, parsedMessageReference.value.reply]
+            .filter(Boolean)
+            .join('\n\n')
+    }
     const content = displayBody.value || ''
     return content.trim() ? content : null
+})
+const quotableContent = computed(() => {
+    if (isToolMessage.value || props.message.isStreaming || isAgentError.value) return null
+    const content = props.message.role === 'assistant'
+        ? assistantBody.value
+        : parsedMessageReference.value?.reply || parsedMessageReference.value?.content || displayBody.value
+    return content.trim() || null
 })
 
 const toolExpanded = ref(false)
@@ -190,7 +232,7 @@ const workspaceDiffPayload = computed(() => {
     return null
 })
 const workspaceDiffFiles = computed(() => Array.isArray(workspaceDiffPayload.value?.files) ? workspaceDiffPayload.value.files : [])
-const workspaceDiffLabel = computed(() => workspaceDiffPayload.value?.workspace_basename || t('chat.workspace'))
+const selectedWorkspaceDiffFileId = computed(() => toolPanelStore.workspaceDiff?.file.id ?? null)
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs))
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true))
 const hasToolDetails = computed(() => !!(toolArgsPayload.value.full || toolResultPayload.value.full))
@@ -200,6 +242,19 @@ const fullToolResult = computed(() => toolResultPayload.value.full)
 const formattedToolResult = computed(() => toolResultPayload.value.display)
 const renderedToolArgs = computed(() => formattedToolArgs.value ? renderToolPayload(formattedToolArgs.value, toolArgsPayload.value.language) : '')
 const renderedToolResult = computed(() => formattedToolResult.value ? renderToolPayload(formattedToolResult.value, toolResultPayload.value.language) : '')
+
+function openWorkspaceDiffFile(file: GroupWorkspaceDiffFile): void {
+    const payload = workspaceDiffPayload.value
+    if (!payload || !file) return
+    filesStore.closePreview()
+    toolPanelStore.openInlineWorkspaceDiff({
+        id: file.id ?? file.path,
+        path: String(file.path || ''),
+        additions: Number(file.additions || 0),
+        deletions: Number(file.deletions || 0),
+        binary: file.binary === true,
+    }, typeof file.patch === 'string' ? file.patch : null, payload.workspace || payload.workspace_root || '')
+}
 const canPlaySpeech = computed(() => {
     if (props.message.role !== 'assistant') return false
     if (!assistantBody.value.trim()) return false
@@ -464,8 +519,42 @@ async function copyBubbleContent() {
     else toast.error(t('chat.copyFailed'))
 }
 
+function referenceBubbleContent() {
+    const content = quotableContent.value
+    const roomId = groupChatStore.currentRoomId
+    if (!content || !roomId) return
+    const role = props.message.role === 'assistant' || isAgent.value ? 'assistant' : 'user'
+    groupChatStore.setMessageReference(roomId, {
+        id: props.message.id,
+        role,
+        content,
+        sender: props.message.senderName || props.message.senderId,
+    })
+}
+
 function isImage(type: string): boolean {
     return type.startsWith('image/')
+}
+
+function attachmentPath(attachment: { path?: string; url?: string }): string | null {
+    if (attachment.path) return attachment.path
+    try {
+        return new URL(attachment.url || '', window.location.origin).searchParams.get('path')
+    } catch {
+        return null
+    }
+}
+
+function handleAttachmentClick(event: MouseEvent, attachment: { name: string; path?: string; url?: string }): void {
+    if (!isPreviewableFile(attachment.name)) return
+    const path = attachmentPath(attachment)
+    if (!path) return
+    const previewEvent = new CustomEvent('hermes:preview-workspace-file', {
+        cancelable: true,
+        detail: { path, fileName: attachment.name },
+    })
+    window.dispatchEvent(previewEvent)
+    if (previewEvent.defaultPrevented) event.preventDefault()
 }
 
 function normalizeLocalFilePath(path: string): string {
@@ -507,50 +596,17 @@ onBeforeUnmount(() => {
                 <span class="sender-name">{{ message.senderName }}</span>
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
-            <div v-if="workspaceDiffPayload" class="workspace-diff-card">
-                <button
-                    class="workspace-diff-head"
-                    type="button"
-                    :aria-expanded="toolExpanded"
-                    @click="toolExpanded = !toolExpanded"
-                >
-                    <span class="workspace-diff-title-wrap">
-                        <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            class="workspace-diff-chevron"
-                            :class="{ rotated: toolExpanded }"
-                        >
-                            <polyline points="9 18 15 12 9 6" />
-                        </svg>
-                        <span class="workspace-diff-title">{{ t('chat.workspaceChanges') }}</span>
-                    </span>
-                    <span class="workspace-diff-status">{{ workspaceDiffPayload.status }}</span>
-                </button>
-                <div class="workspace-diff-meta" :title="workspaceDiffLabel">
-                    <span>{{ workspaceDiffLabel }}</span>
-                    <span>{{ t('chat.changedFiles', { files: workspaceDiffPayload.files_changed ?? workspaceDiffFiles.length }) }}</span>
-                    <span class="diff-add">+{{ workspaceDiffPayload.additions || 0 }}</span>
-                    <span class="diff-del">-{{ workspaceDiffPayload.deletions || 0 }}</span>
-                    <span v-if="workspaceDiffPayload.truncated">{{ t('chat.truncated') }}</span>
-                </div>
-                <div v-if="toolExpanded" class="workspace-diff-files" @click="handleToolDetailClick">
-                    <div v-for="file in workspaceDiffFiles" :key="file.id || file.path" class="workspace-diff-file">
-                        <div class="workspace-diff-file-head">
-                            <span class="workspace-diff-path">{{ file.path }}</span>
-                            <span>{{ file.change_type }}</span>
-                            <span class="diff-add">+{{ file.additions || 0 }}</span>
-                            <span class="diff-del">-{{ file.deletions || 0 }}</span>
-                            <span v-if="file.binary">{{ t('chat.binaryFileDiffUnavailable') }}</span>
-                            <span v-if="file.truncated">{{ t('chat.truncated') }}</span>
-                        </div>
-                        <div v-if="file.patch" class="tool-detail-code-block" v-html="renderToolPayload(file.patch, 'diff')"></div>
-                    </div>
-                </div>
+            <div v-if="workspaceDiffPayload" class="tool-detail-section tool-change-standalone">
+                <ToolChangeCard
+                    :files="workspaceDiffFiles"
+                    :files-changed="workspaceDiffPayload.files_changed || 0"
+                    :additions="workspaceDiffPayload.additions || 0"
+                    :deletions="workspaceDiffPayload.deletions || 0"
+                    :expanded="toolExpanded"
+                    :selected-file-id="selectedWorkspaceDiffFileId"
+                    @toggle="toolExpanded = !toolExpanded"
+                    @select="openWorkspaceDiffFile"
+                />
             </div>
             <div v-else class="tool-line" :class="{ expandable: hasToolDetails }" @click="hasToolDetails && (toolExpanded = !toolExpanded)">
                 <svg
@@ -614,7 +670,7 @@ onBeforeUnmount(() => {
                         :class="{ image: isImage(att.type) }"
                     >
                         <img v-if="isImage(att.type)" :src="att.url" :alt="att.name" class="msg-attachment-thumb" @click="previewUrl = att.url" />
-                        <a v-else class="msg-attachment-file" :href="att.url" :title="t('download.downloadFile')">
+                        <a v-else class="msg-attachment-file" :href="att.url" :title="t('download.downloadFile')" @click="handleAttachmentClick($event, att)">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                                 <polyline points="14 2 14 8 20 8" />
@@ -648,7 +704,11 @@ onBeforeUnmount(() => {
                         <MarkdownRenderer :content="thinkingFullText" />
                     </div>
                 </div>
-                <MarkdownRenderer v-if="displayBody" :content="displayBody" :mention-names="mentionNames" />
+                <template v-if="parsedMessageReference">
+                    <MarkdownRenderer :content="referencedContentMarkdown" :mention-names="mentionNames" />
+                    <MarkdownRenderer v-if="parsedMessageReference.reply" :content="parsedMessageReference.reply" :mention-names="mentionNames" />
+                </template>
+                <MarkdownRenderer v-else-if="displayBody" :content="displayBody" :mention-names="mentionNames" />
                 <span v-if="message.isStreaming && !displayBody" class="streaming-dots">
                     <span></span><span></span><span></span>
                 </span>
@@ -673,6 +733,17 @@ onBeforeUnmount(() => {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                </button>
+                <button
+                    v-if="quotableContent"
+                    class="reference-bubble-btn"
+                    :title="t('chat.referenceMessage')"
+                    @click="referenceBubbleContent"
+                >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 17l-5-5 5-5" />
+                        <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
                     </svg>
                 </button>
                 <span class="message-time">{{ timeStr }}</span>
@@ -726,7 +797,7 @@ onBeforeUnmount(() => {
     }
 
     &.self .msg-content {
-        background-color: rgba(var(--accent-primary-rgb), 0.1);
+        background-color: rgba(var(--accent-primary-rgb), 0.06);
     }
 }
 
@@ -818,101 +889,11 @@ onBeforeUnmount(() => {
     padding-left: 10px;
 }
 
-.workspace-diff-card {
-    width: min(760px, 100%);
-    border: 1px solid $border-color;
-    border-radius: $radius-sm;
-    background: rgba(var(--accent-primary-rgb), 0.04);
-    overflow: hidden;
-}
-
-.workspace-diff-head,
-.workspace-diff-meta,
-.workspace-diff-file-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+.tool-change-standalone {
+    display: inline-block;
+    max-width: 100%;
     min-width: 0;
-}
-
-.workspace-diff-head {
-    background: transparent;
-    border: 0;
-    color: inherit;
-    cursor: pointer;
-    justify-content: space-between;
-    padding: 8px 10px;
-    border-bottom: 1px solid $border-color;
-    text-align: left;
-    width: 100%;
-}
-
-.workspace-diff-title-wrap {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-}
-
-.workspace-diff-chevron {
-    flex-shrink: 0;
-    transition: transform 0.15s ease;
-
-    &.rotated {
-        transform: rotate(90deg);
-    }
-}
-
-.workspace-diff-title {
-    font-weight: 700;
-    color: $text-primary;
-}
-
-.workspace-diff-status {
-    font-size: 11px;
-    color: $text-secondary;
-    font-family: $font-code;
-}
-
-.workspace-diff-meta {
-    padding: 6px 10px;
-    font-size: 12px;
-    color: $text-secondary;
-    flex-wrap: wrap;
-}
-
-.workspace-diff-files {
-    display: grid;
-    gap: 8px;
-    padding: 8px 10px 10px;
-}
-
-.workspace-diff-file {
-    min-width: 0;
-}
-
-.workspace-diff-file-head {
-    padding: 4px 0;
-    font-size: 11px;
-    color: $text-muted;
-    font-family: $font-code;
-}
-
-.workspace-diff-path {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: $text-primary;
-}
-
-.diff-add {
-    color: $success;
-}
-
-.diff-del {
-    color: $error;
+    width: fit-content;
 }
 
 .tool-detail-section {
@@ -1015,6 +996,7 @@ onBeforeUnmount(() => {
 }
 
 .copy-bubble-btn,
+.reference-bubble-btn,
 .speech-bubble-btn {
     display: flex;
     align-items: center;
