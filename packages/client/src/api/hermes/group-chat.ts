@@ -57,8 +57,39 @@ export interface ChatMessage {
     toolPreview?: string
     toolResult?: unknown
     toolStatus?: 'running' | 'done' | 'error'
+    workspaceChanges?: GroupWorkspaceDiffPayload[]
     firstSeenAt?: number
     attachments?: Array<{ id: string; name: string; type: string; size: number; url: string }>
+}
+
+export interface GroupWorkspaceDiffFile {
+    id: string | number
+    path: string
+    change_type?: 'added' | 'modified' | 'deleted' | 'renamed'
+    additions: number
+    deletions: number
+    patch?: string | null
+    binary?: boolean
+    truncated?: boolean
+}
+
+export interface GroupWorkspaceDiffPayload {
+    kind: 'workspace_diff'
+    version: number
+    room_id: string
+    session_id: string
+    run_id: string
+    status: 'completed' | 'failed' | 'aborted'
+    change_id: string
+    workspace_basename: string
+    workspace?: string
+    workspace_root?: string
+    files_changed: number
+    additions: number
+    deletions: number
+    truncated: boolean
+    files: GroupWorkspaceDiffFile[]
+    parent_message_id?: string
 }
 
 export interface MemberInfo {
@@ -186,7 +217,7 @@ export async function joinRoomByCode(code: string): Promise<{ room: RoomInfo }> 
     return request(`/api/hermes/group-chat/rooms/join/${code}`)
 }
 
-export async function updateInviteCode(roomId: string, inviteCode: string): Promise<void> {
+export async function updateInviteCode(roomId: string, inviteCode: string): Promise<{ success: boolean }> {
     return request(`/api/hermes/group-chat/rooms/${roomId}/invite-code`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -269,6 +300,14 @@ export async function readGroupWorkspaceFile(roomId: string, path: string): Prom
 
 export async function fetchGroupWorkspaceFileBlob(roomId: string, path: string, signal?: AbortSignal): Promise<Blob> {
     const params = new URLSearchParams({ path })
+    return fetchAuthenticatedBlob(
+        `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
+        { signal },
+    )
+}
+
+export async function fetchGroupWorkspaceAttachmentBlob(roomId: string, path: string, signal?: AbortSignal): Promise<Blob> {
+    const params = new URLSearchParams({ path, download: '1' })
     return fetchAuthenticatedBlob(
         `/api/hermes/group-chat/rooms/${encodeURIComponent(roomId)}/workspace-file/content?${params}`,
         { signal },

@@ -29,6 +29,8 @@ import { useGlobalSpeech } from "@/composables/useSpeech";
 import { useVoiceSettings } from "@/composables/useVoiceSettings";
 import { speedToEdgeRate, hzToEdgePitch } from "@/utils/ttsHelpers";
 import { formatChatTimestamp } from "@/utils/chat-timestamp";
+import { openSubagentStream, subagentIdFromToolCall } from "@/utils/hermes/subagent-stream";
+import type { WorkspaceRunChangeSummary } from "@/api/hermes/sessions";
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import("./MarkdownRenderer.vue")).default);
 
@@ -196,6 +198,7 @@ function getContentFileUrl(file: DisplayContentFile): string {
 }
 
 const toolExpanded = ref(false);
+const expandedWorkspaceChangeIds = ref(new Set<string>());
 const previewUrl = ref<string | null>(null);
 const selectedToolChangeFileId = ref<number | null>(null);
 
@@ -588,11 +591,25 @@ const hasAttachments = computed(
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs));
 const toolResultPayload = computed(() => formatToolPayload(props.message.toolResult, true));
 const toolChange = computed(() => props.message.toolChange || null);
+const workspaceChanges = computed(() => props.message.workspaceChanges || []);
 const hasToolChange = computed(() => (toolChange.value?.files?.length || 0) > 0);
+
+function isWorkspaceChangeExpanded(changeId: string): boolean {
+  return expandedWorkspaceChangeIds.value.has(changeId);
+}
+
+function toggleWorkspaceChange(changeId: string): void {
+  const next = new Set(expandedWorkspaceChangeIds.value);
+  if (next.has(changeId)) next.delete(changeId);
+  else next.add(changeId);
+  expandedWorkspaceChangeIds.value = next;
+}
 
 const hasToolDetails = computed(
   () => !!(toolArgsPayload.value.full || toolResultPayload.value.full || hasToolChange.value),
 );
+const isSubagentTool = computed(() => subagentIdFromToolCall(props.message.toolCallId) !== null);
+const hasInlineToolDetails = computed(() => hasToolDetails.value && !isSubagentTool.value);
 
 const fullToolArgs = computed(() => toolArgsPayload.value.full);
 const formattedToolArgs = computed(() => toolArgsPayload.value.display);
@@ -615,12 +632,31 @@ const renderedToolResult = computed(() => {
   );
 });
 
+function handleToolLineClick() {
+  if (isSubagentTool.value) {
+    openSubagentStream(chatStore.activeSessionId, props.message.toolCallId);
+    return;
+  }
+  if (hasInlineToolDetails.value) toolExpanded.value = !toolExpanded.value;
+}
+
 async function openToolChangeFile(file: { id: string | number; path: string; additions: number; deletions: number }): Promise<void> {
   const storedFile = toolChange.value?.files.find(candidate => String(candidate.id) === String(file.id));
   if (!storedFile) return;
   selectedToolChangeFileId.value = storedFile.id;
   filesStore.closePreview();
   await toolPanelStore.openWorkspaceDiff(storedFile, toolChange.value?.workspace || "");
+}
+
+async function openAssistantWorkspaceChangeFile(
+  file: { id: string | number; path: string; additions: number; deletions: number },
+  change: WorkspaceRunChangeSummary,
+): Promise<void> {
+  const storedFile = change.files.find(candidate => String(candidate.id) === String(file.id));
+  if (!storedFile) return;
+  selectedToolChangeFileId.value = storedFile.id;
+  filesStore.closePreview();
+  await toolPanelStore.openWorkspaceDiff(storedFile, change.workspace || "");
 }
 
 // 语音播放相关
@@ -838,11 +874,16 @@ onBeforeUnmount(() => {
       <div
         v-if="!hasToolChange"
         class="tool-line"
-        :class="{ expandable: hasToolDetails }"
-        @click="hasToolDetails && (toolExpanded = !toolExpanded)"
+        :class="{ expandable: hasInlineToolDetails || isSubagentTool, 'subagent-entry': isSubagentTool }"
+        :role="isSubagentTool ? 'button' : undefined"
+        :tabindex="isSubagentTool ? 0 : undefined"
+        :title="isSubagentTool ? t('subagent.open') : undefined"
+        @click="handleToolLineClick"
+        @keydown.enter.prevent="handleToolLineClick"
+        @keydown.space.prevent="handleToolLineClick"
       >
         <svg
-          v-if="hasToolDetails"
+          v-if="hasInlineToolDetails || isSubagentTool"
           width="10"
           height="10"
           viewBox="0 0 24 24"
@@ -850,7 +891,7 @@ onBeforeUnmount(() => {
           stroke="currentColor"
           stroke-width="2"
           class="tool-chevron"
-          :class="{ rotated: toolExpanded }"
+          :class="{ rotated: toolExpanded && !isSubagentTool }"
         >
           <polyline points="9 18 15 12 9 6" />
         </svg>
@@ -870,7 +911,7 @@ onBeforeUnmount(() => {
         </svg>
         <span class="tool-name">{{ message.toolName }}</span>
         <span
-          v-if="message.toolPreview && !toolExpanded"
+          v-if="message.toolPreview && (!toolExpanded || isSubagentTool)"
           class="tool-preview"
           >{{ message.toolPreview }}</span
         >
@@ -898,7 +939,7 @@ onBeforeUnmount(() => {
           @select="openToolChangeFile"
         />
       </div>
-      <div v-else-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
+      <div v-else-if="!isSubagentTool && toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
         <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
           <div class="tool-detail-label">{{ t("chat.arguments") }}</div>
           <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
@@ -1061,6 +1102,21 @@ onBeforeUnmount(() => {
               v-if="message.role === 'assistant' && message.content && !parsedThinking.body"
               :content="message.content"
               :heading-id-prefix="effectiveHeadingIdPrefix"
+            />
+
+            <ToolChangeCard
+              v-for="change in workspaceChanges"
+              :key="change.change_id"
+              class="assistant-workspace-change"
+              :files="change.files || []"
+              :files-changed="change.files_changed || 0"
+              :additions="change.additions || 0"
+              :deletions="change.deletions || 0"
+              :expanded="isWorkspaceChangeExpanded(change.change_id)"
+              :selected-file-id="selectedToolChangeFileId"
+              :title="t('chat.changesThisTurn')"
+              @toggle="toggleWorkspaceChange(change.change_id)"
+              @select="file => openAssistantWorkspaceChangeFile(file, change)"
             />
 
             <!-- Render system message content -->
@@ -1637,7 +1693,9 @@ onBeforeUnmount(() => {
   &.expandable {
     cursor: pointer;
 
-    &:hover {
+    &:hover,
+    &:focus-visible {
+      outline: none;
       background: rgba(0, 0, 0, 0.03);
     }
   }
@@ -1747,6 +1805,10 @@ onBeforeUnmount(() => {
 .tool-change-loading {
   color: $text-muted;
   font-size: 11px;
+}
+
+.assistant-workspace-change {
+  margin-top: 10px;
 }
 
 @keyframes spin {

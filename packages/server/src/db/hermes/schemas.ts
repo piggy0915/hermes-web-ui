@@ -39,6 +39,19 @@ export const USAGE_RUN_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS idx_session_us
 
 export const SESSIONS_TABLE = 'sessions'
 
+export const SESSION_CATEGORIES_TABLE = 'session_categories'
+
+export const SESSION_CATEGORIES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: 'TEXT NOT NULL COLLATE NOCASE',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const SESSION_CATEGORIES_INDEXES = {
+  uniq_session_categories_name: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_session_categories_name ON session_categories(name COLLATE NOCASE)',
+}
+
 export const SESSIONS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   profile: 'TEXT NOT NULL DEFAULT \'default\'',
@@ -72,6 +85,12 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   last_active: 'INTEGER NOT NULL',
   is_archived: 'INTEGER NOT NULL DEFAULT 0',
   workspace: 'TEXT',
+  category_id: 'INTEGER',
+  history_revision: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const SESSIONS_INDEXES = {
+  idx_sessions_category_id: 'CREATE INDEX IF NOT EXISTS idx_sessions_category_id ON sessions(category_id)',
 }
 
 export const MESSAGES_TABLE = 'messages'
@@ -106,6 +125,7 @@ export const WORKSPACE_RUN_CHANGES_SCHEMA: Record<string, string> = {
   change_id: 'TEXT PRIMARY KEY',
   room_id: "TEXT NOT NULL DEFAULT ''",
   message_id: "TEXT NOT NULL DEFAULT ''",
+  assistant_message_id: "TEXT NOT NULL DEFAULT ''",
   session_id: 'TEXT NOT NULL',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
   source: 'TEXT NOT NULL DEFAULT \'run\'',
@@ -187,6 +207,8 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   snapshot_nodes_json: "TEXT NOT NULL DEFAULT '[]'",
   snapshot_edges_json: "TEXT NOT NULL DEFAULT '[]'",
   compiled_loops_json: "TEXT NOT NULL DEFAULT '[]'",
+  requested_timeout_ms: 'INTEGER',
+  deadline_at: 'INTEGER',
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -215,6 +237,7 @@ export const WORKFLOW_RUN_NODE_SESSIONS_SCHEMA: Record<string, string> = {
   agent_mode: "TEXT NOT NULL DEFAULT ''",
   status: "TEXT NOT NULL DEFAULT 'queued'",
   sequence: 'INTEGER NOT NULL DEFAULT 0',
+  remaining_timeout_ms_at_start: 'INTEGER',
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -269,6 +292,9 @@ export const COMPRESSION_SNAPSHOT_SCHEMA: Record<string, string> = {
   summary: 'TEXT NOT NULL DEFAULT \'\'',
   last_message_index: 'INTEGER NOT NULL DEFAULT 0',
   message_count_at_time: 'INTEGER NOT NULL DEFAULT 0',
+  compressed_through_message_id: 'INTEGER',
+  protected_head_through_message_id: 'INTEGER',
+  history_revision: 'INTEGER NOT NULL DEFAULT 0',
   updated_at: 'INTEGER NOT NULL',
 }
 
@@ -943,6 +969,59 @@ export function syncTable(
   addMissingSafeColumns(db, tableName, schema)
 }
 
+function cleanupHistoricalZeroLineWorkspaceDiffs(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  const zeroLinePredicate = 'additions = 0 AND deletions = 0'
+  const affectedRows = db.prepare(
+    `SELECT DISTINCT change_id FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE ${zeroLinePredicate}`,
+  ).all() as Array<{ change_id: string }>
+  if (affectedRows.length === 0) return
+
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE ${zeroLinePredicate}`).run()
+    const aggregate = db.prepare(
+      `SELECT COUNT(*) AS files_changed, COALESCE(SUM(additions), 0) AS additions,
+        COALESCE(SUM(deletions), 0) AS deletions, COALESCE(MAX(truncated), 0) AS truncated,
+        COALESCE(SUM(patch_bytes), 0) AS total_patch_bytes
+       FROM ${WORKSPACE_RUN_CHANGE_FILES_TABLE} WHERE change_id = ?`,
+    )
+    const updateParent = db.prepare(
+      `UPDATE ${WORKSPACE_RUN_CHANGES_TABLE}
+       SET files_changed = ?, additions = ?, deletions = ?, truncated = ?, total_patch_bytes = ?
+       WHERE change_id = ?`,
+    )
+    const deleteParent = db.prepare(`DELETE FROM ${WORKSPACE_RUN_CHANGES_TABLE} WHERE change_id = ?`)
+
+    for (const { change_id: changeId } of affectedRows) {
+      const totals = aggregate.get(changeId) as {
+        files_changed: number
+        additions: number
+        deletions: number
+        truncated: number
+        total_patch_bytes: number
+      }
+      if (totals.files_changed === 0) {
+        deleteParent.run(changeId)
+      } else {
+        updateParent.run(
+          totals.files_changed,
+          totals.additions,
+          totals.deletions,
+          totals.truncated,
+          totals.total_patch_bytes,
+          changeId,
+        )
+      }
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 // ============================================================================
 // Unified Initializer
 // ============================================================================
@@ -962,7 +1041,14 @@ export function initAllHermesTables(): void {
     db.exec(USAGE_RUN_INDEX)
 
     // Session store
-    syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
+    syncTable(SESSION_CATEGORIES_TABLE, SESSION_CATEGORIES_SCHEMA, {
+      indexes: SESSION_CATEGORIES_INDEXES,
+    })
+    syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA, {
+      indexes: SESSIONS_INDEXES,
+    })
+    createIndexes(db, SESSION_CATEGORIES_INDEXES)
+    createIndexes(db, SESSIONS_INDEXES)
     syncTable(MESSAGES_TABLE, MESSAGES_SCHEMA)
     db.exec(MESSAGES_INDEX)
     syncTable(WORKSPACE_RUN_CHANGES_TABLE, WORKSPACE_RUN_CHANGES_SCHEMA, {
@@ -971,6 +1057,7 @@ export function initAllHermesTables(): void {
     syncTable(WORKSPACE_RUN_CHANGE_FILES_TABLE, WORKSPACE_RUN_CHANGE_FILES_SCHEMA, {
       indexes: WORKSPACE_RUN_CHANGE_FILES_INDEXES,
     })
+    cleanupHistoricalZeroLineWorkspaceDiffs(db)
 
     // Workflow store
     syncTable(WORKFLOWS_TABLE, WORKFLOWS_SCHEMA, {

@@ -10,6 +10,7 @@ function desktopWindowKind(): DesktopWindowKind {
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getToken: (): Promise<string> => ipcRenderer.invoke('hermes-desktop:get-token'),
   retryBootstrap: (source?: 'cf' | 'github'): Promise<void> => ipcRenderer.invoke('hermes-desktop:retry-bootstrap', source),
+  selectRuntimeDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('hermes-desktop:select-runtime-directory', defaultPath),
   notifyCompletion: (payload: { title: string; body?: string; icon?: string; tag?: string }): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:notify-completion', payload),
   ensureAuth: async (): Promise<boolean> => {
     const token = await ipcRenderer.invoke('hermes-desktop:get-token')
@@ -20,6 +21,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   getWindowState: (): Promise<{ isMaximized: boolean }> => ipcRenderer.invoke('hermes-desktop:get-window-state'),
   windowControl: (action: 'minimize' | 'toggle-maximize' | 'close'): Promise<{ isMaximized: boolean }> => ipcRenderer.invoke('hermes-desktop:window-control', action),
+  onWindowStateChange: (callback: (state: { isMaximized: boolean }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: { isMaximized: boolean }) => callback(state)
+    ipcRenderer.on('hermes-desktop:window-state-change', listener)
+    return () => ipcRenderer.removeListener('hermes-desktop:window-state-change', listener)
+  },
   getPetWindowState: () => ipcRenderer.invoke('hermes-desktop:get-pet-window-state'),
   setPetWindowBounds: (bounds: { x: number; y: number; width: number; height: number }) => ipcRenderer.invoke('hermes-desktop:set-pet-window-bounds', bounds),
   setPetWindowVisible: (visible: boolean) => ipcRenderer.invoke('hermes-desktop:set-pet-window-visible', visible),
