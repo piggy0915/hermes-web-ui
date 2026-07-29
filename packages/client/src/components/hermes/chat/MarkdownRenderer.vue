@@ -86,6 +86,10 @@ const md: MarkdownIt = new MarkdownItConstructor({
   },
 })
 
+// Preserve literal quote characters from user and assistant messages while
+// retaining typographer's other replacements (for example, dashes and ellipses).
+md.disable('smartquotes')
+
 md.use(markdownItKatex, {
   katex,
   throwOnError: false,
@@ -504,7 +508,7 @@ async function handleMarkdownClick(event: MouseEvent): Promise<void> {
 @use '@/styles/variables' as *;
 
 .markdown-body {
-  font-size: 14px;
+  font-size: var(--font-size-base);
   line-height: 1.65;
   width: 100%;
   min-width: 0;

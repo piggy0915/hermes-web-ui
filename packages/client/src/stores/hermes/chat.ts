@@ -20,7 +20,7 @@ export type ContentBlock = ContentBlockImport
 
 export const LIVE_CHAT_MESSAGE_PAGE_SIZE = 150
 export const LIVE_CHAT_MAX_LOADED_MESSAGES = 300
-const WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX = 'workspace-run-change:'
+const LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX = 'workspace-run-change:'
 type ChatAgentId = 'hermes' | 'claude' | 'codex' | 'ekko-agent'
 
 function agentToCodingAgentId(agent?: string): ChatCodingAgentId | undefined {
@@ -71,7 +71,6 @@ export interface Message {
   toolResult?: unknown
   toolStatus?: 'running' | 'done' | 'error'
   toolDuration?: number  // 工具执行时长（秒）
-  toolChange?: WorkspaceRunChangeSummary
   workspaceChanges?: WorkspaceRunChangeSummary[]
   isStreaming?: boolean
   attachments?: Attachment[]
@@ -449,22 +448,19 @@ export function alignWorkspaceChangeAssistantMessage(
 export function attachWorkspaceChangesToExactTurns(
   messages: Message[],
   changes: WorkspaceRunChangeSummary[],
-): WorkspaceRunChangeSummary[] {
+): void {
   for (const message of messages) message.workspaceChanges = []
   const assistantById = new Map(
     messages
       .filter(message => message.role === 'assistant')
       .map(message => [message.id, message]),
   )
-  const fallback: WorkspaceRunChangeSummary[] = []
   for (const change of changes) {
     const assistantMessageId = String(change.assistant_message_id || '').trim()
     if (!assistantMessageId) continue
     const target = assistantMessageId ? assistantById.get(assistantMessageId) : undefined
     if (target) target.workspaceChanges!.push(change)
-    else fallback.push(change)
   }
-  return fallback
 }
 
 function isToolOutputError(output: unknown): boolean {
@@ -620,6 +616,38 @@ function runtimeObjectPayload(value: unknown): Record<string, unknown> | null {
 function isBackgroundDelegateToolPayload(toolName: unknown, payload: unknown): boolean {
   if (String(toolName || '') !== 'delegate_task') return false
   return runtimeObjectPayload(payload)?.mode === 'background'
+}
+
+const HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX = 'background-delegate:'
+
+function backgroundDelegateTaskDescriptors(
+  payload: Record<string, unknown>,
+  toolArgs: unknown,
+): Array<{ taskIndex: number; taskCount: number; goal: string }> {
+  const args = runtimeObjectPayload(toolArgs)
+  const payloadGoals = Array.isArray(payload.goals)
+    ? payload.goals.map(value => String(value || '').trim())
+    : []
+  const argumentGoals = Array.isArray(args?.goals)
+    ? args.goals.map(value => String(value || '').trim())
+    : []
+  const goals = payloadGoals.length > 0 ? payloadGoals : argumentGoals
+  const fallbackGoal = String(payload.goal || args?.goal || '').trim()
+  const requestedCount = Number(payload.count ?? payload.task_count)
+  const taskCount = Math.max(
+    1,
+    Number.isFinite(requestedCount) ? requestedCount : 0,
+    goals.length,
+  )
+  return Array.from({ length: taskCount }, (_, taskIndex) => ({
+    taskIndex,
+    taskCount,
+    goal: goals[taskIndex] || (taskIndex === 0 ? fallbackGoal : ''),
+  }))
+}
+
+function backgroundDelegateAnchorCallId(baseId: string, taskIndex: number): string {
+  return `${HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX}${baseId}:${taskIndex}`
 }
 
 function parsePersistedMoaToolPayload(toolName: string | undefined, value: unknown): { preview?: string; result?: unknown } | null {
@@ -791,6 +819,9 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
       const toolArgs = toolArgsMap.has(tcId) ? toolArgsMap.get(tcId) : undefined
       const moaPayload = parsePersistedMoaToolPayload(toolName, (msg as any).content)
       const backgroundDelegate = isBackgroundDelegateToolPayload(toolName, (msg as any).content)
+      const delegatePayload = toolName === 'delegate_task'
+        ? runtimeObjectPayload(msg.display_content) || runtimeObjectPayload((msg as any).content)
+        : null
       // Extract a short preview from the content
       let preview = moaPayload?.preview || ''
       const contentText = runtimePayloadText((msg as any).content)
@@ -811,7 +842,98 @@ function mapHermesMessages(msgs: HermesMessage[]): Message[] {
       if (placeholderIdx !== -1) {
         result.splice(placeholderIdx, 1)
       }
-      if (backgroundDelegate) continue
+      if (delegatePayload?.runtime === 'ekko') {
+        const subagentId = String(delegatePayload.subagent_id || '').trim()
+        if (!subagentId) continue
+        const delegateArgs = runtimeObjectPayload(toolArgs)
+        const status = subagentStatus(delegatePayload.status)
+        const taskIndex = Number(delegatePayload.task_index ?? 0)
+        const taskCount = Math.max(1, Number(delegatePayload.task_count ?? 1) || 1)
+        const goal = String(delegatePayload.goal || delegateArgs?.goal || '').trim()
+        const summary = String(delegatePayload.summary || delegatePayload.output || '').trim()
+        const label = `${Number.isFinite(taskIndex) ? taskIndex + 1 : 1}/${taskCount}`
+        const durationMs = Number(delegatePayload.duration_ms)
+        const restoredPayload = {
+          ...delegatePayload,
+          goal,
+          duration_seconds: delegatePayload.duration_seconds
+            ?? (Number.isFinite(durationMs) ? durationMs / 1000 : undefined),
+        }
+        result.push({
+          id: String(msg.id),
+          role: 'tool',
+          content: '',
+          timestamp: Math.round(msg.timestamp * 1000),
+          toolName: 'delegate_task',
+          toolCallId: `subagent:${subagentId}`,
+          toolArgs,
+          toolPreview: `${label}${summary ? ` · ${summary}` : goal ? ` · ${goal}` : ''}`.slice(0, 220),
+          toolResult: restoredPayload,
+          toolStatus: status === 'running' ? 'running' : status === 'completed' ? 'done' : 'error',
+          finishReason: readFinishReason(msg),
+          runMarker: readRunMarker(msg),
+        })
+        continue
+      }
+      if (delegatePayload?.runtime === 'hermes') {
+        const persistedTasks = Array.isArray(delegatePayload.tasks)
+          ? delegatePayload.tasks.filter(task => task && typeof task === 'object') as Array<Record<string, unknown>>
+          : [delegatePayload]
+        const restorableTasks = persistedTasks.filter(task => String(task.subagent_id || '').trim())
+        if (restorableTasks.length > 0) {
+          for (const [index, task] of restorableTasks.entries()) {
+            const subagentId = String(task.subagent_id || '').trim()
+            const status = subagentStatus(task.status)
+            const taskIndex = Number(task.task_index ?? index)
+            const taskCount = Math.max(1, Number(task.task_count ?? restorableTasks.length) || 1)
+            const goal = String(task.goal || '').trim()
+            const summary = String(task.summary || task.output || '').trim()
+            const label = `${Number.isFinite(taskIndex) ? taskIndex + 1 : index + 1}/${taskCount}`
+            result.push({
+              id: `${String(msg.id)}:background:${Number.isFinite(taskIndex) ? taskIndex : index}`,
+              role: 'tool',
+              content: '',
+              timestamp: Math.round(msg.timestamp * 1000),
+              toolName: 'delegate_task',
+              toolCallId: `subagent:${subagentId}`,
+              toolArgs,
+              toolPreview: `${label}${summary ? ` · ${summary}` : goal ? ` · ${goal}` : ''}`.slice(0, 220),
+              toolResult: task,
+              toolStatus: status === 'running' ? 'running' : status === 'completed' ? 'done' : 'error',
+              finishReason: readFinishReason(msg),
+              runMarker: readRunMarker(msg),
+            })
+          }
+          continue
+        }
+      }
+      if (backgroundDelegate && delegatePayload) {
+        const baseId = tcId || String(msg.id)
+        for (const task of backgroundDelegateTaskDescriptors(delegatePayload, toolArgs)) {
+          const label = `${task.taskIndex + 1}/${task.taskCount}`
+          result.push({
+            id: `${String(msg.id)}:background:${task.taskIndex}`,
+            role: 'tool',
+            content: '',
+            timestamp: Math.round(msg.timestamp * 1000),
+            toolName: 'delegate_task',
+            toolCallId: backgroundDelegateAnchorCallId(baseId, task.taskIndex),
+            toolArgs,
+            toolPreview: `${label}${task.goal ? ` · ${task.goal}` : ''}`.slice(0, 220),
+            toolResult: {
+              ...delegatePayload,
+              runtime: 'hermes',
+              task_index: task.taskIndex,
+              task_count: task.taskCount,
+              goal: task.goal,
+            },
+            toolStatus: 'done',
+            finishReason: readFinishReason(msg),
+            runMarker: readRunMarker(msg),
+          })
+        }
+        continue
+      }
       result.push({
         id: String(msg.id),
         role: 'tool',
@@ -1265,92 +1387,30 @@ export const useChatStore = defineStore('chat', () => {
     removeItem(storageKey())
   }
 
-  function attachToolChangesToMessages(sessionId: string) {
+  function attachWorkspaceChangesToMessages(sessionId: string) {
     const target = sessions.value.find(session => session.id === sessionId)
     if (!target) return
     const changes = workspaceRunChangesBySession.value.get(sessionId)
-    const existingById = new Map(
-      target.messages
-        .filter(message => message.id.startsWith(WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX))
-        .map(message => [message.id, message]),
+    target.messages = target.messages.filter(
+      message => !message.id.startsWith(LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX),
     )
-    target.messages = target.messages.filter(message => !message.id.startsWith(WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX))
-    for (const message of target.messages) {
-      if (message.role === 'tool' && message.toolCallId) {
-        const change = changes?.get(message.toolCallId)
-        message.toolChange = String(change?.assistant_message_id || '').trim() ? change : undefined
-      }
-    }
     if (!changes) {
       for (const message of target.messages) message.workspaceChanges = []
       return
     }
     const runChanges = [...changes.values()].filter(change => change?.source === 'run')
-    const unresolvedAttributedChanges = attachWorkspaceChangesToExactTurns(target.messages, runChanges)
-    insertWorkspaceRunChangeMessages(target, unresolvedAttributedChanges, existingById)
-  }
-
-  function workspaceRunChangeMessageId(changeId: string): string {
-    return `${WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX}${changeId}`
-  }
-
-  function workspaceRunChangeTimestamp(change: WorkspaceRunChangeSummary): number {
-    const seconds = Number(change.finished_at || change.created_at || change.started_at || 0)
-    return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : Date.now()
-  }
-
-  function insertWorkspaceRunChangeMessages(
-    target: Session,
-    changes: WorkspaceRunChangeSummary[],
-    existingById = new Map<string, Message>(),
-  ) {
-    const sortedChanges = changes
-      .filter(change => change?.change_id && (change.files?.length > 0))
-      .sort((a, b) => {
-        const timeDelta = workspaceRunChangeTimestamp(b) - workspaceRunChangeTimestamp(a)
-        return timeDelta !== 0 ? timeDelta : b.change_id.localeCompare(a.change_id)
-      })
-    if (!sortedChanges.length) return
-    for (const change of sortedChanges) {
-      const messageId = workspaceRunChangeMessageId(change.change_id)
-      const existing = existingById.get(messageId) || null
-      const timestamp = workspaceRunChangeTimestamp(change)
-      const insertAfter = findWorkspaceRunChangeAnchorIndex(target.messages, timestamp)
-      const message: Message = existing || {
-        id: messageId,
-        role: 'tool',
-        content: '',
-        timestamp,
-        toolName: 'workspace',
-        toolStatus: 'done',
-      }
-      message.timestamp = timestamp
-      message.toolChange = change
-      target.messages.splice(insertAfter + 1, 0, message)
-    }
-  }
-
-  function findWorkspaceRunChangeAnchorIndex(messages: Message[], timestamp: number): number {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i]
-      if (message.id.startsWith(WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX)) continue
-      if (message.role === 'assistant' && message.timestamp <= timestamp + 1000) return i
-    }
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (!messages[i].id.startsWith(WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX)) return i
-    }
-    return messages.length - 1
+    attachWorkspaceChangesToExactTurns(target.messages, runChanges)
   }
 
   function setWorkspaceRunChanges(sessionId: string, changes: WorkspaceRunChangeSummary[]) {
     const next = new Map(workspaceRunChangesBySession.value)
-    const byToolCallId = new Map<string, WorkspaceRunChangeSummary>()
+    const byChangeId = new Map<string, WorkspaceRunChangeSummary>()
     for (const change of changes) {
-      if (change?.change_id) byToolCallId.set(change.change_id, change)
+      if (change?.change_id) byChangeId.set(change.change_id, change)
     }
-    next.set(sessionId, byToolCallId)
+    next.set(sessionId, byChangeId)
     workspaceRunChangesBySession.value = next
-    attachToolChangesToMessages(sessionId)
+    attachWorkspaceChangesToMessages(sessionId)
   }
 
   function upsertWorkspaceRunChange(sessionId: string, change: WorkspaceRunChangeSummary | null | undefined) {
@@ -1360,7 +1420,7 @@ export const useChatStore = defineStore('chat', () => {
     current.set(change.change_id, change)
     next.set(sessionId, current)
     workspaceRunChangesBySession.value = next
-    attachToolChangesToMessages(sessionId)
+    attachWorkspaceChangesToMessages(sessionId)
   }
 
   function handleWorkspaceRunChangeEvent(
@@ -1389,7 +1449,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function restoreWorkspaceRunChangeMessages(sessionId: string) {
-    attachToolChangesToMessages(sessionId)
+    attachWorkspaceChangesToMessages(sessionId)
     if (workspaceRunChangesBySession.value.has(sessionId) || workspaceRunChangeLoadRequests.has(sessionId)) return
     workspaceRunChangeLoadRequests.add(sessionId)
     void loadWorkspaceRunChangesForSession(sessionId)
@@ -1571,6 +1631,7 @@ export const useChatStore = defineStore('chat', () => {
       if (!detail) return false
       const mapped = mapHermesMessages(detail.messages || [])
       target.messages = mapped
+      restorePersistedSubagentStreams(sid)
       target.loadedMessageCount = detail.messages.length
       target.messageTotal = detail.total
       target.messageCount = detail.total
@@ -1730,6 +1791,7 @@ export const useChatStore = defineStore('chat', () => {
           target.parentLastMessageRole = (data as any).parentLastMessageRole || target.parentLastMessageRole || null
           if (data.messages?.length) {
             target.messages = mapHermesMessages(data.messages as any[])
+            restorePersistedSubagentStreams(sessionId)
             restoreWorkspaceRunChangeMessages(sessionId)
             target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
             target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
@@ -1792,7 +1854,11 @@ export const useChatStore = defineStore('chat', () => {
               } else if (e.event === 'workspace.diff.completed') {
                 handleWorkspaceRunChangeEvent(sessionId, e)
               } else if (e.event === 'tool.started') {
-                if (isBackgroundDelegateToolPayload(e.tool || e.name, (e as any).arguments)) continue
+                const startedToolName = e.tool || e.name
+                if (
+                  isBackgroundDelegateToolPayload(startedToolName, (e as any).arguments)
+                  || (isEkkoAgentSession(sessionId) && startedToolName === 'delegate_task')
+                ) continue
                 const msgs = getSessionMsgs(sessionId)
                 const toolCallId = e.tool_call_id as string | undefined
                 const existingTool = toolCallId
@@ -1827,6 +1893,20 @@ export const useChatStore = defineStore('chat', () => {
                 const output = runtimeToolOutputFromEvent(e)
                 const toolName = e.tool || e.name || toolMsgs[toolMsgs.length - 1]?.toolName
                 if (isBackgroundDelegateToolPayload(toolName, output)) {
+                  target.messages = target.messages.filter(message => !toolMsgs.includes(message))
+                  addHermesBackgroundDelegateAnchors(
+                    sessionId,
+                    toolCallId,
+                    output,
+                    toolMsgs[toolMsgs.length - 1]?.toolArgs,
+                  )
+                  continue
+                }
+                if (
+                  isEkkoAgentSession(sessionId)
+                  && toolName === 'delegate_task'
+                  && runtimeObjectPayload(output)?.runtime === 'ekko'
+                ) {
                   target.messages = target.messages.filter(message => !toolMsgs.includes(message))
                   continue
                 }
@@ -1900,7 +1980,8 @@ export const useChatStore = defineStore('chat', () => {
       const existingIds = new Set(target.messages.map(message => message.id))
       const olderMessages = mapHermesMessages(page.messages).filter(message => !existingIds.has(message.id))
       target.messages = [...olderMessages, ...target.messages]
-      attachToolChangesToMessages(sessionId)
+      restorePersistedSubagentStreams(sessionId)
+      attachWorkspaceChangesToMessages(sessionId)
       target.loadedMessageCount = offset + page.messages.length
       target.messageTotal = page.total
       target.messageCount = page.total
@@ -2031,9 +2112,75 @@ export const useChatStore = defineStore('chat', () => {
     return s?.messages || []
   }
 
+  function isEkkoAgentSession(sessionId: string): boolean {
+    const session = sessions.value.find(item => item.id === sessionId)
+    return session?.codingAgentId === 'ekko-agent' || session?.agent === 'ekko-agent'
+  }
+
   function addMessage(sessionId: string, msg: Message) {
     const s = sessions.value.find(s => s.id === sessionId)
     if (s) s.messages.push(msg)
+  }
+
+  function addMessageInTimelineOrder(sessionId: string, msg: Message) {
+    const session = sessions.value.find(item => item.id === sessionId)
+    if (!session) return
+    const insertAt = session.messages.findIndex(existing => existing.timestamp > msg.timestamp)
+    if (insertAt === -1) {
+      session.messages.push(msg)
+      return
+    }
+    session.messages.splice(insertAt, 0, msg)
+  }
+
+  function addHermesBackgroundDelegateAnchors(
+    sessionId: string,
+    toolCallId: string | undefined,
+    output: unknown,
+    toolArgs: unknown,
+  ) {
+    const payload = runtimeObjectPayload(output)
+    if (!payload || payload.mode !== 'background' || payload.runtime === 'ekko') return
+    const baseId = toolCallId || String(payload.delegation_id || uid())
+    const messages = getSessionMsgs(sessionId)
+    for (const task of backgroundDelegateTaskDescriptors(payload, toolArgs)) {
+      const anchorCallId = backgroundDelegateAnchorCallId(baseId, task.taskIndex)
+      if (messages.some(message => message.toolCallId === anchorCallId)) continue
+      const label = `${task.taskIndex + 1}/${task.taskCount}`
+      addMessage(sessionId, {
+        id: uid(),
+        role: 'tool',
+        content: '',
+        timestamp: Date.now(),
+        toolName: 'delegate_task',
+        toolCallId: anchorCallId,
+        toolArgs,
+        toolPreview: `${label}${task.goal ? ` · ${task.goal}` : ''}`.slice(0, 220),
+        toolResult: {
+          ...payload,
+          runtime: 'hermes',
+          task_index: task.taskIndex,
+          task_count: task.taskCount,
+          goal: task.goal,
+        },
+        toolStatus: 'done',
+      })
+    }
+  }
+
+  function findHermesBackgroundDelegateAnchor(messages: Message[], evt: RunEvent): Message | undefined {
+    const taskIndex = Number((evt as any).task_index ?? 0)
+    const goal = String((evt as any).goal || '').trim()
+    const candidates = messages.filter(message =>
+      message.role === 'tool'
+      && message.toolCallId?.startsWith(HERMES_BACKGROUND_DELEGATE_ANCHOR_PREFIX)
+      && runtimeObjectPayload(message.toolResult)?.runtime === 'hermes',
+    )
+    return candidates.find(message => {
+      const payload = runtimeObjectPayload(message.toolResult)
+      return Number(payload?.task_index ?? 0) === taskIndex
+        && (!goal || !String(payload?.goal || '').trim() || String(payload?.goal || '').trim() === goal)
+    }) || candidates.find(message => Number(runtimeObjectPayload(message.toolResult)?.task_index ?? 0) === taskIndex)
   }
 
   function addOrUpdateSession(session: Session) {
@@ -2144,6 +2291,7 @@ export const useChatStore = defineStore('chat', () => {
 
     const msgs = getSessionMsgs(sessionId)
     const existing = msgs.find(m => m.role === 'tool' && m.toolCallId === toolCallId)
+      || findHermesBackgroundDelegateAnchor(msgs, evt)
     const toolStatus = nextStream.status === 'running'
       ? 'running'
       : nextStream.status === 'completed' ? 'done' : 'error'
@@ -2173,13 +2321,35 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
 
-    addMessage(sessionId, {
+    addMessageInTimelineOrder(sessionId, {
       id: uid(),
       role: 'tool',
       content: '',
-      timestamp: Date.now(),
+      timestamp: nextStream.startedAt,
       ...update,
     })
+  }
+
+  function restorePersistedSubagentStreams(sessionId: string) {
+    for (const message of getSessionMsgs(sessionId)) {
+      if (message.role !== 'tool' || !message.toolCallId?.startsWith('subagent:')) continue
+      const subagentId = message.toolCallId.slice('subagent:'.length).trim()
+      if (!subagentId || subagentStreams.value.has(`${sessionId}:${subagentId}`)) continue
+      const payload = runtimeObjectPayload(message.toolResult)
+      if (!payload) continue
+      const status = subagentStatus(payload.status)
+      const restoredOutput = String(payload.output || payload.output_tail || payload.summary || '').trim()
+      handleSubagentEvent(sessionId, {
+        ...payload,
+        event: status === 'running' ? 'subagent.start' : 'subagent.complete',
+        session_id: sessionId,
+        subagent_id: subagentId,
+        background: payload.mode === 'background',
+        background_snapshot: true,
+        summary: restoredOutput || payload.summary,
+        timestamp: message.timestamp,
+      } as RunEvent)
+    }
   }
 
   function settleInterruptedSubagents(sessionId: string) {
@@ -2950,7 +3120,7 @@ export const useChatStore = defineStore('chat', () => {
         agentToCodingAgentId(activeSession.value?.agent) ||
         'claude-code'
       const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
-      const codingAgentApiMode = isCodingAgentExecution && codingAgentId !== 'ekko-agent' && codingAgentMode !== 'global'
+      const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(
             activeSession.value?.apiMode || providerGroup?.api_mode,
             inferCodingAgentApiMode(
@@ -3068,6 +3238,7 @@ export const useChatStore = defineStore('chat', () => {
           const previousReasoningAssistantMessageId = reasoningAssistantMessageId
           const replayRunMarker = getReplayRunMarker(data.events) ?? activeRunMarker
           target.messages = mapHermesMessages(data.messages as any[])
+          restorePersistedSubagentStreams(sid)
           target.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
           target.messageTotal = data.messageTotal ?? target.messageCount ?? target.loadedMessageCount
           target.messageCount = target.messageTotal
@@ -3423,7 +3594,11 @@ export const useChatStore = defineStore('chat', () => {
 
             case 'tool.started': {
               runHadToolActivity = true
-              if (isBackgroundDelegateToolPayload(evt.tool || evt.name, (evt as any).arguments)) break
+              const startedToolName = evt.tool || evt.name
+              if (
+                isBackgroundDelegateToolPayload(startedToolName, (evt as any).arguments)
+                || (isEkkoAgentSession(sid) && startedToolName === 'delegate_task')
+              ) break
               const msgs = getSessionMsgs(sid)
               const toolCallId = (evt as any).tool_call_id as string | undefined
               const last = activeAssistantMessageId
@@ -3471,6 +3646,21 @@ export const useChatStore = defineStore('chat', () => {
               const output = runtimeToolOutputFromEvent(evt)
               const toolName = evt.tool || evt.name || toolMsgs[toolMsgs.length - 1]?.toolName
               if (isBackgroundDelegateToolPayload(toolName, output)) {
+                const session = sessions.value.find(item => item.id === sid)
+                if (session) session.messages = session.messages.filter(message => !toolMsgs.includes(message))
+                addHermesBackgroundDelegateAnchors(
+                  sid,
+                  toolCallId,
+                  output,
+                  toolMsgs[toolMsgs.length - 1]?.toolArgs,
+                )
+                break
+              }
+              if (
+                isEkkoAgentSession(sid)
+                && toolName === 'delegate_task'
+                && runtimeObjectPayload(output)?.runtime === 'ekko'
+              ) {
                 const session = sessions.value.find(item => item.id === sid)
                 if (session) session.messages = session.messages.filter(message => !toolMsgs.includes(message))
                 break
@@ -3645,7 +3835,7 @@ export const useChatStore = defineStore('chat', () => {
                 .find(message => message.role === 'assistant' && String(message.content || '').trim())
                 ?.id
               handleTerminalWorkspaceRunChange(sid, evt, terminalAssistantMessageId)
-              attachToolChangesToMessages(sid)
+              attachWorkspaceChangesToMessages(sid)
 
               // 自动播放语音
               if (autoPlaySpeechEnabled.value && runProducedAssistantContent) {
@@ -4084,7 +4274,11 @@ export const useChatStore = defineStore('chat', () => {
 
         case 'tool.started': {
           runHadToolActivity = true
-          if (isBackgroundDelegateToolPayload(evt.tool || evt.name, (evt as any).arguments)) break
+          const startedToolName = evt.tool || evt.name
+          if (
+            isBackgroundDelegateToolPayload(startedToolName, (evt as any).arguments)
+            || (isEkkoAgentSession(sid) && startedToolName === 'delegate_task')
+          ) break
           const msgs = getSessionMsgs(sid)
           const toolCallId = (evt as any).tool_call_id as string | undefined
           const last = activeAssistantMessageId
@@ -4134,6 +4328,21 @@ export const useChatStore = defineStore('chat', () => {
           if (isBackgroundDelegateToolPayload(toolName, output)) {
             const session = sessions.value.find(item => item.id === sid)
             if (session) session.messages = session.messages.filter(message => !toolMsgs.includes(message))
+            addHermesBackgroundDelegateAnchors(
+              sid,
+              toolCallId,
+              output,
+              toolMsgs[toolMsgs.length - 1]?.toolArgs,
+            )
+            break
+          }
+          if (
+            isEkkoAgentSession(sid)
+            && toolName === 'delegate_task'
+            && runtimeObjectPayload(output)?.runtime === 'ekko'
+          ) {
+            const session = sessions.value.find(item => item.id === sid)
+            if (session) session.messages = session.messages.filter(message => !toolMsgs.includes(message))
             break
           }
           if (toolMsgs.length > 0) {
@@ -4149,7 +4358,7 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'workspace.diff.completed': {
-          handleWorkspaceRunChangeEvent(sid, evt)
+          activeAssistantMessageId = handleWorkspaceRunChangeEvent(sid, evt, activeAssistantMessageId)
           break
         }
 
@@ -4186,7 +4395,6 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.completed': {
-          handleTerminalWorkspaceRunChange(sid, evt)
           clearAgentEventMessages(sid)
           const hasQueue = (evt as any).queue_remaining > 0
           const hasBackground = (evt.background_pending || 0) > 0
@@ -4288,7 +4496,12 @@ export const useChatStore = defineStore('chat', () => {
             playCompletionBellIfEnabled()
             showCompletionNotificationIfEnabled(sid, completedAssistantMessageId)
           }
-          attachToolChangesToMessages(sid)
+          const terminalAssistantMessageId = completedAssistantMessageId || [...getSessionMsgs(sid)]
+            .reverse()
+            .find(message => message.role === 'assistant' && String(message.content || '').trim())
+            ?.id
+          handleTerminalWorkspaceRunChange(sid, evt, terminalAssistantMessageId)
+          attachWorkspaceChangesToMessages(sid)
 
           // Auto-play speech for every completed assistant message
           if (autoPlaySpeechEnabled.value && runProducedAssistantContent) {
@@ -4325,7 +4538,11 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         case 'run.failed': {
-          handleTerminalWorkspaceRunChange(sid, evt)
+          const failedMessages = getSessionMsgs(sid)
+          const failedAssistant = activeAssistantMessageId
+            ? failedMessages.find(message => message.id === activeAssistantMessageId)
+            : [...failedMessages].reverse().find(message => message.role === 'assistant' && message.isStreaming)
+          handleTerminalWorkspaceRunChange(sid, evt, failedAssistant?.id)
           clearAgentEventMessages(sid)
           if ((evt as any).inputTokens != null) {
             const target = sessions.value.find(s => s.id === sid)
@@ -4529,6 +4746,7 @@ export const useChatStore = defineStore('chat', () => {
                 activeSession.value.isLocalOnly = false
               }
               activeSession.value.messages = mapHermesMessages(data.messages as any[])
+              restorePersistedSubagentStreams(sid)
               activeSession.value.loadedMessageCount = data.messageLoadedCount ?? data.messages.length
               activeSession.value.messageTotal = data.messageTotal ?? activeSession.value.messageCount ?? activeSession.value.loadedMessageCount
               activeSession.value.messageCount = activeSession.value.messageTotal

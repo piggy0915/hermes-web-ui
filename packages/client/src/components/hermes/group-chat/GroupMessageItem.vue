@@ -24,6 +24,7 @@ import { isPreviewableFile } from '@/utils/hermes/file-preview'
 import ToolChangeCard from '@/components/hermes/chat/ToolChangeCard.vue'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
+import { isServerTtsProvider } from '@/api/hermes/tts'
 
 const MarkdownRenderer = defineAsyncComponent(async () => (await import('../chat/MarkdownRenderer.vue')).default)
 
@@ -208,22 +209,6 @@ const quotableContent = computed(() => {
 const toolExpanded = ref(false)
 const expandedWorkspaceChangeIds = ref(new Set<string>())
 const isToolMessage = computed(() => props.message.role === 'tool')
-const workspaceDiffPayload = computed(() => {
-    if ((props.message.toolName || props.message.tool_name) !== 'workspace_diff') return null
-    const raw = props.message.toolResult ?? props.message.content
-    if (!raw) return null
-    if (typeof raw === 'object' && (raw as any)?.kind === 'workspace_diff') return raw as any
-    if (typeof raw === 'string') {
-        try {
-            const parsed = JSON.parse(raw)
-            return parsed?.kind === 'workspace_diff' ? parsed : null
-        } catch {
-            return null
-        }
-    }
-    return null
-})
-const workspaceDiffFiles = computed(() => Array.isArray(workspaceDiffPayload.value?.files) ? workspaceDiffPayload.value.files : [])
 const assistantWorkspaceChanges = computed(() => props.message.workspaceChanges || [])
 const selectedWorkspaceDiffFileId = computed(() => toolPanelStore.workspaceDiff?.file.id ?? null)
 const toolArgsPayload = computed(() => formatToolPayload(props.message.toolArgs))
@@ -259,23 +244,20 @@ function openWorkspaceDiffFileForPayload(file: GroupWorkspaceDiffFile, payload: 
     }, typeof file.patch === 'string' ? file.patch : null, payload.workspace || payload.workspace_root || '')
 }
 
-function openWorkspaceDiffFile(file: GroupWorkspaceDiffFile): void {
-    openWorkspaceDiffFileForPayload(file, workspaceDiffPayload.value)
-}
 const canPlaySpeech = computed(() => {
     if (props.message.role !== 'assistant') return false
     if (!assistantBody.value.trim()) return false
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') return true
+    if (isServerTtsProvider(voiceSettings.provider.value)) return true
     return speech.isSupported
 })
 const isPlayingThisMessage = computed(() => {
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
+    if (isServerTtsProvider(voiceSettings.provider.value)) {
         return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPlaying.value
     }
     return speech.currentMessageId.value === props.message.id && speech.isPlaying.value
 })
 const isPausedThisMessage = computed(() => {
-    if (voiceSettings.provider.value === 'openai' || voiceSettings.provider.value === 'custom' || voiceSettings.provider.value === 'edge' || voiceSettings.provider.value === 'mimo') {
+    if (isServerTtsProvider(voiceSettings.provider.value)) {
         return speech.currentCustomMessageId.value === props.message.id && speech.isCustomPaused.value
     }
     return speech.currentMessageId.value === props.message.id && speech.isPaused.value
@@ -504,6 +486,14 @@ function playSpeech(content: string, autoplay = false) {
         else speech.openaiToggle(props.message.id, content, options)
         return
     }
+    if (isServerTtsProvider(voiceSettings.provider.value)) {
+        const options = {
+            provider: voiceSettings.provider.value,
+        }
+        if (autoplay) void speech.openaiPlay(props.message.id, content, options).catch(handleAutoplayTtsError)
+        else speech.openaiToggle(props.message.id, content, options)
+        return
+    }
     if (voiceSettings.provider.value === 'webspeech') {
         speech.toggleBrowser(props.message.id, content, {
             voiceName: voiceSettings.webspeechVoice.value || undefined,
@@ -603,19 +593,7 @@ onBeforeUnmount(() => {
                 <span class="sender-name">{{ message.senderName }}</span>
                 <span v-if="isAgent && agentInfo?.description" class="agent-desc">{{ agentInfo.description }}</span>
             </div>
-            <div v-if="workspaceDiffPayload" class="tool-detail-section tool-change-standalone">
-                <ToolChangeCard
-                    :files="workspaceDiffFiles"
-                    :files-changed="workspaceDiffPayload.files_changed || 0"
-                    :additions="workspaceDiffPayload.additions || 0"
-                    :deletions="workspaceDiffPayload.deletions || 0"
-                    :expanded="toolExpanded"
-                    :selected-file-id="selectedWorkspaceDiffFileId"
-                    @toggle="toolExpanded = !toolExpanded"
-                    @select="openWorkspaceDiffFile"
-                />
-            </div>
-            <div v-else class="tool-line" :class="{ expandable: hasToolDetails }" @click="hasToolDetails && (toolExpanded = !toolExpanded)">
+            <div class="tool-line" :class="{ expandable: hasToolDetails }" @click="hasToolDetails && (toolExpanded = !toolExpanded)">
                 <svg
                     v-if="hasToolDetails"
                     width="10"
@@ -637,7 +615,7 @@ onBeforeUnmount(() => {
                 <span v-if="message.toolStatus === 'running'" class="tool-spinner"></span>
                 <span v-if="message.toolStatus === 'error'" class="tool-error-badge">{{ t('chat.error') }}</span>
             </div>
-            <div v-if="!workspaceDiffPayload && toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
+            <div v-if="toolExpanded && hasToolDetails" class="tool-details" @click="handleToolDetailClick">
                 <div v-if="formattedToolArgs" class="tool-detail-section" data-copy-source="tool-args">
                     <div class="tool-detail-label">{{ t('chat.arguments') }}</div>
                     <div class="tool-detail-code-block" v-html="renderedToolArgs"></div>
@@ -910,13 +888,6 @@ onBeforeUnmount(() => {
     padding-left: 10px;
 }
 
-.tool-change-standalone {
-    display: inline-block;
-    max-width: 100%;
-    min-width: 0;
-    width: fit-content;
-}
-
 .assistant-workspace-change {
     margin-top: 10px;
 }
@@ -1008,6 +979,7 @@ onBeforeUnmount(() => {
     gap: 6px;
     margin-top: 4px;
     padding: 0 4px;
+    color: $text-muted;
     opacity: 0;
     transition: opacity 0.15s ease;
 
@@ -1030,7 +1002,7 @@ onBeforeUnmount(() => {
     height: 24px;
     border: none;
     background: transparent;
-    color: $text-muted;
+    color: inherit;
     cursor: pointer;
     border-radius: $radius-sm;
     padding: 0;
@@ -1041,14 +1013,6 @@ onBeforeUnmount(() => {
         background: rgba(0, 0, 0, 0.06);
     }
 
-    .dark & {
-        color: #999999;
-
-        &:hover {
-            color: #cccccc;
-            background: rgba(255, 255, 255, 0.1);
-        }
-    }
 }
 
 .speech-bubble-btn {
@@ -1110,7 +1074,7 @@ onBeforeUnmount(() => {
 
 .msg-content {
     padding: 10px 14px;
-    font-size: 14px;
+    font-size: var(--font-size-base);
     line-height: 1.65;
     color: $text-primary;
     border-radius: 10px;
@@ -1148,6 +1112,15 @@ onBeforeUnmount(() => {
         font-weight: 600;
         cursor: default;
     }
+}
+
+:global(html.theme-has-custom-background .group-message .msg-content:not(.agent-error)),
+:global(html.theme-has-custom-background .group-message.agent .msg-content.agent-content:not(.agent-error)),
+:global(html.theme-has-custom-background .group-message.self .msg-content:not(.agent-error)) {
+    background-color: rgba(var(--bg-main-surface-rgb), 0.78);
+    border: 1px solid rgba(var(--text-primary-rgb), 0.18);
+    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    backdrop-filter: blur(8px) saturate(110%);
 }
 
 .msg-attachments {

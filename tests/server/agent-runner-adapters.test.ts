@@ -6,6 +6,7 @@ import {
   responseToolNamespaceForName,
   responsesToAnthropicMessages,
   responsesToOpenAiChat,
+  truncateResponsesToolOutputs,
 } from '../../packages/server/src/services/agent-runner/adapters/responses'
 import {
   anthropicToOpenAiChat,
@@ -39,6 +40,39 @@ describe('agent runner Responses adapters', () => {
     expect(responsesToAnthropicMessages({ input: [] }, maxTarget)).toMatchObject({
       reasoning_effort: 'max',
     })
+  })
+
+  it('truncates oversized Responses function-call outputs before provider forwarding', () => {
+    const largeOutput = `${'A'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+        { type: 'function_call_output', call_id: 'call_big', output: largeOutput },
+        { type: 'function_call_output', call_id: 'call_small', output: 'ok' },
+      ],
+    }
+
+    const sanitized = truncateResponsesToolOutputs(body)
+    const output = sanitized.input[1].output
+
+    expect(sanitized).not.toBe(body)
+    expect(output.length).toBeLessThan(largeOutput.length)
+    expect(output.length).toBeLessThanOrEqual(32 * 1024)
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(output).toContain('truncated before provider request')
+    expect(output).toContain(`original_chars=${largeOutput.length}`)
+    expect(output.endsWith('TAIL_MARKER')).toBe(true)
+    expect(sanitized.input[2]).toBe(body.input[2])
+    expect(body.input[1].output).toBe(largeOutput)
+
+    const cjkOutput = `${'界'.repeat(32 * 1024 + 1)}TAIL_MARKER`
+    const cjkSanitized = truncateResponsesToolOutputs({
+      input: [{ type: 'function_call_output', call_id: 'call_cjk', output: cjkOutput }],
+    })
+    const cjkTruncated = cjkSanitized.input[0].output
+    expect(Buffer.byteLength(cjkTruncated, 'utf8')).toBeLessThanOrEqual(32 * 1024)
+    expect(cjkTruncated).toContain(`original_bytes=${Buffer.byteLength(cjkOutput, 'utf8')}`)
+    expect(cjkTruncated.endsWith('TAIL_MARKER')).toBe(true)
   })
 
   it('converts Responses input to OpenAI Chat messages and tools', () => {
@@ -82,6 +116,103 @@ describe('agent runner Responses adapters', () => {
         function: { name: 'search', description: 'Search', parameters: { type: 'object' } },
       }],
     })
+  })
+
+  it('preserves Responses image inputs for Chat and Anthropic providers', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'inspect this' },
+          { type: 'input_image', image_url: imageUrl },
+        ],
+      }],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+      ],
+    }])
+  })
+
+  it('preserves Responses image tool outputs without stringifying data URIs', () => {
+    const imageUrl = 'data:image/png;base64,AQID'
+    const body = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'inspect this' }] },
+        {
+          type: 'function_call',
+          call_id: 'call_image',
+          name: 'view_image',
+          arguments: '{"path":"/tmp/image.png"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_image',
+          output: [{ type: 'input_image', image_url: imageUrl, detail: 'high' }],
+        },
+      ],
+    }
+
+    expect(responsesToOpenAiChat(body, target).messages).toEqual([
+      { role: 'user', content: 'inspect this' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_image',
+          type: 'function',
+          function: { name: 'view_image', arguments: '{"path":"/tmp/image.png"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_image',
+        content: '[Image output attached for tool view_image]',
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool view_image (call_image)]' },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+        ],
+      },
+    ])
+
+    expect(responsesToAnthropicMessages(body, target).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'inspect this' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'call_image',
+          name: 'view_image',
+          input: { path: '/tmp/image.png' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'call_image',
+          content: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          }],
+        }],
+      },
+    ])
   })
 
   it('groups parallel Responses function calls before Chat tool results', () => {
@@ -745,6 +876,96 @@ describe('agent runner Anthropic adapters', () => {
         function: { name: 'lookup', description: 'Lookup', parameters: { type: 'object' } },
       }],
     })
+  })
+
+  it('preserves Anthropic image inputs for Chat and Responses providers', () => {
+    const body = {
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect this' },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+          },
+        ],
+      }],
+    }
+    const imageUrl = 'data:image/png;base64,AQID'
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'inspect this' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+      ],
+    }])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'inspect this' },
+        { type: 'input_image', image_url: imageUrl },
+      ],
+    }])
+  })
+
+  it('preserves Anthropic image tool results without stringifying data URIs', () => {
+    const body = {
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'image.png' } }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [{
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AQID' },
+            }],
+          }],
+        },
+      ],
+    }
+
+    expect(anthropicToOpenAiChat(body, anthropicTarget).messages).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'tool call',
+        tool_calls: [{
+          id: 'toolu_1',
+          type: 'function',
+          function: { name: 'Read', arguments: '{"file_path":"image.png"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'toolu_1', content: '[Image output attached.]' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Image output from tool toolu_1]' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+        ],
+      },
+    ])
+    expect(anthropicToOpenAiResponses(body, anthropicTarget).input).toEqual([
+      {
+        type: 'function_call',
+        call_id: 'toolu_1',
+        name: 'Read',
+        arguments: '{"file_path":"image.png"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_1',
+        output: [{
+          type: 'input_image',
+          image_url: 'data:image/png;base64,AQID',
+        }],
+      },
+    ])
   })
 
   it('converts Anthropic messages to Responses input', () => {

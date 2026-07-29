@@ -1,9 +1,14 @@
+import { imageUrlToAnthropicSource, openAiImageUrl } from './multimodal'
+
 export interface ResponsesAdapterTarget {
   model: string
 }
 
 const HERMES_STUDIO_NAMESPACE = 'mcp__hermes_studio'
 const TOOL_SEARCH_NAME = 'tool_search'
+const RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT = 32 * 1024
+const RESPONSES_TOOL_OUTPUT_HEAD_BYTES = 24 * 1024
+const RESPONSES_TOOL_OUTPUT_TAIL_BYTES = 7 * 1024
 
 const HERMES_STUDIO_MCP_TOOLS = [
   {
@@ -301,6 +306,80 @@ function responseInputItems(body: any): any[] {
   return Array.isArray(body?.input) ? body.input : []
 }
 
+function utf8ByteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8')
+}
+
+function utf8Head(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let end = 0
+  for (const char of text) {
+    const nextBytes = utf8ByteLength(char)
+    if (bytes + nextBytes > maxBytes) break
+    bytes += nextBytes
+    end += char.length
+  }
+  return text.slice(0, end)
+}
+
+function utf8Tail(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let start = text.length
+  while (start > 0) {
+    let nextStart = start - 1
+    const code = text.charCodeAt(nextStart)
+    if (code >= 0xDC00 && code <= 0xDFFF && nextStart > 0) {
+      const prev = text.charCodeAt(nextStart - 1)
+      if (prev >= 0xD800 && prev <= 0xDBFF) nextStart -= 1
+    }
+    const char = text.slice(nextStart, start)
+    const nextBytes = utf8ByteLength(char)
+    if (bytes + nextBytes > maxBytes) break
+    bytes += nextBytes
+    start = nextStart
+  }
+  return text.slice(start)
+}
+
+function truncateResponsesToolOutputText(output: string): string {
+  const originalBytes = utf8ByteLength(output)
+  if (originalBytes <= RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT) return output
+  const marker = `[Hermes Web UI: coding-agent tool output truncated before provider request; original_chars=${output.length}; original_bytes=${originalBytes}]`
+  const markerOverhead = utf8ByteLength(marker) + 4
+  const contentBudget = Math.max(0, RESPONSES_TOOL_OUTPUT_FORWARD_LIMIT - markerOverhead)
+  const tailBytes = Math.min(RESPONSES_TOOL_OUTPUT_TAIL_BYTES, Math.floor(contentBudget / 4))
+  const headBytes = Math.min(RESPONSES_TOOL_OUTPUT_HEAD_BYTES, Math.max(0, contentBudget - tailBytes))
+  const head = utf8Head(output, headBytes)
+  const tail = utf8Tail(output, tailBytes)
+  return [
+    head,
+    '',
+    marker,
+    '',
+    tail,
+  ].join('\n')
+}
+
+export function truncateResponsesToolOutputs(body: any): any {
+  const input = responseInputItems(body)
+  if (!input.length) return body
+
+  let changed = false
+  const nextInput = input.map((item: any) => {
+    if (!item || typeof item !== 'object' || item.type !== 'function_call_output' || typeof item.output !== 'string') {
+      return item
+    }
+    const nextOutput = truncateResponsesToolOutputText(item.output)
+    if (nextOutput === item.output) return item
+    changed = true
+    return { ...item, output: nextOutput }
+  })
+
+  return changed ? { ...body, input: nextInput } : body
+}
+
 function responsesAvailableTools(body: any): any[] {
   const tools = Array.isArray(body?.tools) ? [...body.tools] : []
   if (Array.isArray(body?.additional_tools)) tools.push(...body.additional_tools)
@@ -422,16 +501,66 @@ function safeJsonParse(value: string): any {
     return {}
   }
 }
-function responseContentToText(content: unknown): string {
+function responseContentToOpenAiChat(content: unknown): string | any[] {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return stringifyContent(content)
-  return content.map((part: any) => {
-    if (typeof part === 'string') return part
-    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text') {
-      return String(part.text || '')
+  const parts: any[] = []
+  let hasImage = false
+  for (const part of content) {
+    if (typeof part === 'string') {
+      parts.push({ type: 'text', text: part })
+      continue
     }
-    return stringifyContent(part)
-  }).filter(Boolean).join('\n')
+    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text' || (part && typeof part === 'object' && 'text' in part)) {
+      parts.push({ type: 'text', text: String(part.text || '') })
+      continue
+    }
+    if (part?.type === 'input_image') {
+      const url = openAiImageUrl(part)
+      if (url) {
+        hasImage = true
+        const detail = typeof part.detail === 'string' ? part.detail : ''
+        parts.push({
+          type: 'image_url',
+          image_url: {
+            url,
+            ...(detail ? { detail } : {}),
+          },
+        })
+      }
+      continue
+    }
+    const text = stringifyContent(part)
+    if (text) parts.push({ type: 'text', text })
+  }
+  if (hasImage) return parts
+  return parts.map(part => String(part.text || '')).filter(Boolean).join('\n')
+}
+
+function responseToolOutputToOpenAiChat(output: unknown, toolName: string, callId: string): {
+  toolContent: string
+  imageMessageContent: any[]
+} {
+  const converted = responseContentToOpenAiChat(output)
+  if (typeof converted === 'string') {
+    return { toolContent: converted, imageMessageContent: [] }
+  }
+  const imageParts = converted.filter(part => part?.type === 'image_url')
+  const text = converted
+    .filter(part => part?.type === 'text')
+    .map(part => String(part.text || ''))
+    .filter(Boolean)
+    .join('\n')
+  if (!imageParts.length) {
+    return { toolContent: text, imageMessageContent: [] }
+  }
+  return {
+    toolContent: text || `[Image output attached for tool ${toolName}]`,
+    imageMessageContent: [
+      { type: 'text', text: `[Image output from tool ${toolName} (${callId})]` },
+      ...imageParts,
+    ],
+  }
 }
 
 function chatRoleForResponsesRole(role: unknown): string {
@@ -459,16 +588,30 @@ function responsesInputToChatMessages(body: any): any[] {
     if (!pendingToolCalls.length) return
     const outputs = pendingToolCalls.map(call => pendingToolOutputs.get(call.id))
     if (outputs.every(Boolean)) {
+      const imageMessageContent: any[] = []
       messages.push({
         role: 'assistant',
         content: null,
         tool_calls: pendingToolCalls,
       })
       for (let index = 0; index < pendingToolCalls.length; index += 1) {
+        const call = pendingToolCalls[index]
+        const converted = responseToolOutputToOpenAiChat(
+          outputs[index].output,
+          call.function.name,
+          call.id,
+        )
         messages.push({
           role: 'tool',
-          tool_call_id: pendingToolCalls[index].id,
-          content: stringifyContent(outputs[index].output),
+          tool_call_id: call.id,
+          content: converted.toolContent,
+        })
+        imageMessageContent.push(...converted.imageMessageContent)
+      }
+      if (imageMessageContent.length) {
+        messages.push({
+          role: 'user',
+          content: imageMessageContent,
         })
       }
     }
@@ -508,7 +651,7 @@ function responsesInputToChatMessages(body: any): any[] {
     if (item.role) {
       messages.push({
         role: chatRoleForResponsesRole(item.role),
-        content: responseContentToText(item.content),
+        content: responseContentToOpenAiChat(item.content),
       })
     }
   }
@@ -555,12 +698,24 @@ function responsesContentToAnthropicContent(content: unknown, role: 'user' | 'as
   const parts = Array.isArray(content) ? content : [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: stringifyContent(content) }]
   const mapped = parts.map((part: any) => {
     if (typeof part === 'string') return { type: 'text', text: part }
-    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text') {
+    if (part?.type === 'input_text' || part?.type === 'output_text' || part?.type === 'text' || (part && typeof part === 'object' && 'text' in part)) {
       return { type: 'text', text: String(part.text || '') }
+    }
+    if (part?.type === 'input_image') {
+      const url = openAiImageUrl(part)
+      const source = url ? imageUrlToAnthropicSource(url) : null
+      return source ? { type: 'image', source } : null
     }
     return null
   }).filter(Boolean)
   return mapped.length ? mapped : [{ type: 'text', text: '' }]
+}
+
+function responsesToolOutputToAnthropicContent(output: unknown): string | any[] {
+  if (typeof output === 'string') return output
+  const parts = responsesContentToAnthropicContent(output, 'user')
+  if (parts.some(part => part?.type === 'image')) return parts
+  return parts.map(part => String(part.text || '')).filter(Boolean).join('\n')
 }
 
 function responsesInputToAnthropicMessages(body: any): any[] {
@@ -592,7 +747,7 @@ function responsesInputToAnthropicMessages(body: any): any[] {
           tool_use_id: String(item.call_id || ''),
           content: item.type === 'tool_search_output'
             ? toolSearchOutputText(item)
-            : stringifyContent(item.output),
+            : responsesToolOutputToAnthropicContent(item.output),
         }],
       })
       continue
