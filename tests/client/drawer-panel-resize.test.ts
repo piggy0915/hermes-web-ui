@@ -13,6 +13,32 @@ describe('ChatPanel tool drawer resizing support', () => {
     expect(source).toContain('window.addEventListener("resize", handleToolPanelViewportResize)')
     expect(source).toContain('watch(showToolPanel')
     expect(source).toContain('width: 100% !important;')
+    expect(source).toContain('deltaSign: document.documentElement.dir === "rtl" ? 1 : -1')
+    expect(source).toMatch(/\.chat-tool-resize-handle\s*\{[\s\S]*inset-inline-start: -7px;/)
+  })
+
+  it('mirrors group-chat and workflow resize seams without changing LTR sizing', () => {
+    const groupSource = readFileSync('packages/client/src/components/hermes/group-chat/GroupChatPanel.vue', 'utf8')
+    const workflowSource = readFileSync('packages/client/src/views/hermes/WorkflowView.vue', 'utf8')
+
+    expect(groupSource).toContain("deltaSign: document.documentElement.dir === 'rtl' ? 1 : -1")
+    expect(groupSource).toMatch(/\.group-workspace-resize-handle\s*\{[\s\S]*inset-inline-start: -7px;/)
+    expect(workflowSource).toContain("deltaSign: document.documentElement.dir === 'rtl' ? -1 : 1")
+    expect(workflowSource).toMatch(/\.workflow-chat-resize-handle\s*\{[\s\S]*inset-inline-end: -7px;/)
+  })
+
+  it('mirrors fixed mobile panels only when the document is RTL', () => {
+    const filesSource = readFileSync('packages/client/src/components/hermes/chat/FilesPanel.vue', 'utf8')
+    const workflowSource = readFileSync('packages/client/src/views/hermes/WorkflowView.vue', 'utf8')
+
+    expect(filesSource).toMatch(/\.files-tree-panel\s*\{[\s\S]*inset-inline-start: 0;[\s\S]*&:dir\(rtl\)\s*\{[\s\S]*translateX\(100%\)/)
+    expect(workflowSource).toMatch(/\.workflow-runs-panel\s*\{[\s\S]*inset-inline-end: 0;[\s\S]*&:dir\(rtl\)\s*\{[\s\S]*box-shadow: 8px/)
+  })
+
+  it('keeps native Windows title-bar geometry LTR in every app language', () => {
+    const source = readFileSync('packages/client/src/components/layout/DesktopTitleBar.vue', 'utf8')
+
+    expect(source).toMatch(/\.desktop-titlebar\s*\{[\s\S]*direction: ltr;/)
   })
 
   it('renders the workspace, terminal, and desktop browser tabs as a full-height right icon rail', () => {
@@ -32,5 +58,13 @@ describe('ChatPanel tool drawer resizing support', () => {
     const source = readFileSync('packages/client/src/components/hermes/chat/OutlinePanel.vue', 'utf8')
 
     expect(source).toMatch(/\.outline-panel\s*\{[\s\S]*background-color: \$bg-main-surface;/)
+  })
+
+  it('keeps workspace diffs and their editor stretched across the drawer', () => {
+    const source = readFileSync('packages/client/src/components/hermes/files/WorkspaceDiffPreview.vue', 'utf8')
+
+    expect(source).toMatch(/\.workspace-diff-preview\s*\{[\s\S]*flex: 1;[\s\S]*width: 100%;[\s\S]*min-width: 0;/)
+    expect(source).toMatch(/\.diff-preview-content\s*\{[\s\S]*min-width: 0;/)
+    expect(source).toMatch(/:deep\(\.file-editor\)\s*\{[\s\S]*width: 100%;[\s\S]*min-width: 0;/)
   })
 })
