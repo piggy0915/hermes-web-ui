@@ -259,6 +259,9 @@ export default {
   runtimeVersions: {
     title: '版本管理',
     runtimeTitle: 'Hermes Runtime',
+    currentHermesAgentVersion: '当前 Hermes Agent 版本',
+    activeRuntimeDirectory: '当前 Runtime 路径',
+    cliUpdateDescription: 'Hermes Runtime 0.19.1 及以上版本支持通过以下命令单独升级内置的 Hermes Agent；该命令不会升级 Hermes Studio 桌面端或 Web UI。执行前请先完全退出 Hermes Studio：',
     webUiTitle: 'Web UI',
     platform: '平台',
     currentWebUi: '当前 Web UI',
@@ -1773,6 +1776,8 @@ export default {
     deleteFailed: '删除配置失败',
     exportSuccess: '配置已导出',
     exportFailed: '导出配置失败',
+    exportTimeout: '导出超时。该配置体积过大，无法打包 —— 通常是 workspace 下的缓存和虚拟环境把它撑大的。',
+    importTimeout: '服务器解包归档时导入超时。请换用更快的存储后重试，或通过 Hermes CLI 导入。',
     importSuccess: '配置已导入',
     importFailed: '导入配置失败',
     importSelectFile: '选择归档文件',

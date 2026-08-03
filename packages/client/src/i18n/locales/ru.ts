@@ -181,6 +181,9 @@ export default {
   runtimeVersions: {
     title: 'Управление версиями',
     runtimeTitle: 'Hermes Runtime',
+    currentHermesAgentVersion: 'Текущая версия Hermes Agent',
+    activeRuntimeDirectory: 'Путь к активному Runtime',
+    cliUpdateDescription: 'В Hermes Runtime версии 0.19.1 и новее следующая команда обновляет только встроенный Hermes Agent. Она не обновляет настольное приложение Hermes Studio или Web UI. Перед выполнением полностью закройте Hermes Studio:',
     webUiTitle: 'Web UI',
     platform: 'Платформа',
     currentWebUi: 'Текущий Web UI',
@@ -1543,6 +1546,8 @@ export default {
     deleteFailed: 'Ошибка удаления профиля',
     exportSuccess: 'Профиль экспортирован',
     exportFailed: 'Ошибка экспорта профиля',
+    exportTimeout: 'Время экспорта истекло. Профиль слишком велик для архивации — обычно его раздувают кэши и виртуальные окружения в workspace.',
+    importTimeout: 'Время импорта истекло, пока сервер распаковывал архив. Повторите попытку на более быстром диске или импортируйте архив через Hermes CLI.',
     importSuccess: 'Профиль импортирован',
     importFailed: 'Ошибка импорта профиля',
     importSelectFile: 'Выберите архивный файл',

@@ -259,6 +259,9 @@ export default {
   runtimeVersions: {
     title: 'Version Management',
     runtimeTitle: 'Hermes Runtime',
+    currentHermesAgentVersion: 'Current Hermes Agent version',
+    activeRuntimeDirectory: 'Active Runtime directory',
+    cliUpdateDescription: 'Hermes Runtime 0.19.1 and later can use the following command to update the bundled Hermes Agent only. It does not update the Hermes Studio desktop app or Web UI. Fully quit Hermes Studio before running:',
     webUiTitle: 'Web UI',
     platform: 'Platform',
     currentWebUi: 'Current Web UI',
@@ -1781,6 +1784,8 @@ export default {
     deleteFailed: 'Failed to delete profile',
     exportSuccess: 'Profile exported',
     exportFailed: 'Failed to export profile',
+    exportTimeout: 'Export timed out. This profile is too large to archive — caches and virtual environments under its workspace are usually what makes it big.',
+    importTimeout: 'Import timed out while the server was unpacking the archive. Try again on faster storage or import it with the Hermes CLI.',
     importSuccess: 'Profile imported',
     importFailed: 'Failed to import profile',
     importSelectFile: 'Select archive file',

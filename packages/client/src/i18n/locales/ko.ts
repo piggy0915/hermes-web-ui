@@ -271,6 +271,9 @@ export default {
   runtimeVersions: {
     title: '버전 관리',
     runtimeTitle: 'Hermes Runtime',
+    currentHermesAgentVersion: '현재 Hermes Agent 버전',
+    activeRuntimeDirectory: '현재 Runtime 경로',
+    cliUpdateDescription: 'Hermes Runtime 0.19.1 이상에서는 다음 명령으로 내장 Hermes Agent만 업데이트할 수 있습니다. Hermes Studio 데스크톱 앱이나 Web UI는 업데이트되지 않습니다. 실행 전에 Hermes Studio를 완전히 종료하세요:',
     webUiTitle: 'Web UI',
     platform: '플랫폼',
     currentWebUi: '현재 Web UI',
@@ -1339,6 +1342,8 @@ export default {
     deleteFailed: '프로필 삭제 실패',
     exportSuccess: '프로필이 내보내기되었습니다',
     exportFailed: '프로필 내보내기 실패',
+    exportTimeout: '내보내기 시간이 초과되었습니다. 이 프로필이 너무 큽니다 — 보통 workspace 아래의 캐시와 가상 환경이 원인입니다.',
+    importTimeout: '서버에서 아카이브를 푸는 동안 가져오기 시간이 초과되었습니다. 더 빠른 저장소에서 다시 시도하거나 Hermes CLI로 가져오세요.',
     importSuccess: '프로필이 가져오기되었습니다',
     importFailed: '프로필 가져오기 실패',
     importSelectFile: '아카이브 파일 선택',

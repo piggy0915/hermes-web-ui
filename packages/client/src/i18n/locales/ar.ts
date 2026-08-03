@@ -259,6 +259,9 @@ export default {
   runtimeVersions: {
     title: 'إدارة الإصدارات',
     runtimeTitle: 'Hermes Runtime',
+    currentHermesAgentVersion: 'إصدار Hermes Agent الحالي',
+    activeRuntimeDirectory: 'مسار Runtime النشط',
+    cliUpdateDescription: 'في Hermes Runtime بالإصدار 0.19.1 والإصدارات الأحدث، يحدّث الأمر التالي Hermes Agent المضمّن فقط. ولا يحدّث تطبيق Hermes Studio لسطح المكتب أو Web UI. أغلق Hermes Studio بالكامل قبل تنفيذه:',
     webUiTitle: 'واجهة الويب',
     platform: 'المنصة',
     currentWebUi: 'واجهة الويب الحالية',
@@ -1781,6 +1784,8 @@ export default {
     deleteFailed: 'تعذّر حذف البروفايل',
     exportSuccess: 'تم تصدير البروفايل',
     exportFailed: 'تعذّر تصدير البروفايل',
+    exportTimeout: 'انتهت مهلة التصدير. هذا البروفايل أكبر من أن يُؤرشف — غالباً ما تكون الكاشات والبيئات الافتراضية داخل workspace هي سبب حجمه.',
+    importTimeout: 'انتهت مهلة الاستيراد أثناء فك الخادم للأرشيف. جرّب مجدداً على مساحة تخزين أسرع أو استورده باستخدام Hermes CLI.',
     importSuccess: 'تم استيراد البروفايل',
     importFailed: 'تعذّر استيراد البروفايل',
     importSelectFile: 'اختر ملف الأرشيف',
