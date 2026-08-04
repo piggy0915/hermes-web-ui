@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=nousresearch/hermes-agent:main
+ARG BASE_IMAGE=nousresearch/hermes-agent:v2026.8.3
 FROM ${BASE_IMAGE}
 
 ARG NODE_VERSION=24.17.0
