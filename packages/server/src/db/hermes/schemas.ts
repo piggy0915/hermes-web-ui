@@ -195,6 +195,17 @@ export const WORKFLOWS_INDEXES = {
   idx_workflows_updated_at: 'CREATE INDEX IF NOT EXISTS idx_workflows_updated_at ON workflows(updated_at)',
 }
 
+export const WORKFLOW_SCHEDULES_TABLE = 'workflow_schedules'
+export const WORKFLOW_SCHEDULES_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', workflow_id: 'TEXT NOT NULL', profile: "TEXT NOT NULL DEFAULT 'default'", owner_user_id: 'INTEGER', schedule: 'TEXT NOT NULL', timezone: "TEXT NOT NULL DEFAULT 'UTC'", enabled: 'INTEGER NOT NULL DEFAULT 1', input: 'TEXT', start_node_ids_json: "TEXT NOT NULL DEFAULT '[]'", timeout_ms: 'INTEGER', concurrency_policy: "TEXT NOT NULL DEFAULT 'skip'", misfire_policy: "TEXT NOT NULL DEFAULT 'skip'", last_scheduled_at: 'INTEGER', next_run_at: 'INTEGER', last_run_id: 'TEXT', last_error: 'TEXT', created_at: 'INTEGER NOT NULL', updated_at: 'INTEGER NOT NULL',
+}
+export const WORKFLOW_SCHEDULES_INDEXES = { idx_workflow_schedules_workflow: 'CREATE INDEX IF NOT EXISTS idx_workflow_schedules_workflow ON workflow_schedules(workflow_id)', idx_workflow_schedules_due: 'CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due ON workflow_schedules(enabled, next_run_at)' }
+export const WORKFLOW_SCHEDULE_TRIGGERS_TABLE = 'workflow_schedule_triggers'
+export const WORKFLOW_SCHEDULE_TRIGGERS_SCHEMA: Record<string, string> = { identity: 'TEXT PRIMARY KEY', schedule_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', scheduled_at: 'INTEGER NOT NULL', created_at: 'INTEGER NOT NULL' }
+export const WORKFLOW_SCHEDULE_EVENTS_TABLE = 'workflow_schedule_events'
+export const WORKFLOW_SCHEDULE_EVENTS_SCHEMA: Record<string, string> = { id: 'TEXT PRIMARY KEY', schedule_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', trigger_identity: 'TEXT NOT NULL', scheduled_at: 'INTEGER NOT NULL', kind: 'TEXT NOT NULL', run_id: 'TEXT', error: 'TEXT', created_at: 'INTEGER NOT NULL' }
+export const WORKFLOW_SCHEDULE_EVENTS_INDEXES = { idx_workflow_schedule_events_schedule: 'CREATE INDEX IF NOT EXISTS idx_workflow_schedule_events_schedule ON workflow_schedule_events(schedule_id, created_at)' }
+
 export const WORKFLOW_RUNS_TABLE = 'workflow_runs'
 
 export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
@@ -213,6 +224,8 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
   error: 'TEXT',
+  trigger_source: "TEXT NOT NULL DEFAULT 'manual'",
+  scheduled_at: 'INTEGER',
 }
 
 export const WORKFLOW_RUNS_INDEXES = {
@@ -558,6 +571,7 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   id: 'TEXT PRIMARY KEY',
   name: 'TEXT NOT NULL',
   inviteCode: 'TEXT UNIQUE',
+  createdAt: 'INTEGER NOT NULL DEFAULT 0',
   summaryProfile: "TEXT NOT NULL DEFAULT 'default'",
   summaryProvider: "TEXT NOT NULL DEFAULT ''",
   summaryModel: "TEXT NOT NULL DEFAULT ''",
@@ -587,6 +601,8 @@ export const GC_MESSAGES_SCHEMA: Record<string, string> = {
   senderAgentRecordId: "TEXT NOT NULL DEFAULT ''",
   content: 'TEXT NOT NULL',
   timestamp: 'INTEGER NOT NULL',
+  persistedAt: 'INTEGER NOT NULL DEFAULT 0',
+  mentions: "TEXT NOT NULL DEFAULT '[]'",
   run_id: 'TEXT',
   role: "TEXT NOT NULL DEFAULT 'user'",
   tool_call_id: 'TEXT',
@@ -596,6 +612,13 @@ export const GC_MESSAGES_SCHEMA: Record<string, string> = {
   reasoning: 'TEXT',
   reasoning_details: 'TEXT',
   reasoning_content: 'TEXT',
+}
+
+export const GC_ACTIVITY_MIGRATIONS_TABLE = 'gc_activity_migrations'
+
+export const GC_ACTIVITY_MIGRATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  migrationCutoff: 'INTEGER NOT NULL',
 }
 
 export const GC_ROOM_AGENTS_TABLE = 'gc_room_agents'
@@ -784,6 +807,54 @@ function addMissingSafeColumns(
       continue
     }
     db.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(columnName)} ${columnDef}`)
+  }
+}
+
+function migrateGroupChatActivityTimes(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  migrationCutoff: number,
+): void {
+  if (!tableExists(db, GC_ROOMS_TABLE) || !tableExists(db, GC_MESSAGES_TABLE)) return
+  const migrationId = 'legacy-activity-times-v1'
+  if (db.prepare(
+    `SELECT 1 FROM ${quoteIdentifier(GC_ACTIVITY_MIGRATIONS_TABLE)} WHERE id = ?`,
+  ).get(migrationId)) return
+
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare(
+      `UPDATE ${quoteIdentifier(GC_MESSAGES_TABLE)}
+       SET persistedAt = timestamp
+       WHERE persistedAt = 0
+         AND timestamp > 0
+         AND timestamp <= ?
+         AND COALESCE(role, 'user') <> 'tool'
+         AND COALESCE(tool_name, '') = ''
+         AND COALESCE(finish_reason, '') <> 'streaming'`,
+    ).run(migrationCutoff)
+    db.prepare(
+      `UPDATE ${quoteIdentifier(GC_ROOMS_TABLE)}
+       SET createdAt = (
+         SELECT MIN(m.persistedAt)
+         FROM ${quoteIdentifier(GC_MESSAGES_TABLE)} m
+         WHERE m.roomId = ${quoteIdentifier(GC_ROOMS_TABLE)}.id
+           AND m.persistedAt > 0
+       )
+       WHERE createdAt = 0
+         AND EXISTS (
+           SELECT 1
+           FROM ${quoteIdentifier(GC_MESSAGES_TABLE)} m
+           WHERE m.roomId = ${quoteIdentifier(GC_ROOMS_TABLE)}.id
+             AND m.persistedAt > 0
+         )`,
+    ).run()
+    db.prepare(
+      `INSERT INTO ${quoteIdentifier(GC_ACTIVITY_MIGRATIONS_TABLE)} (id, migrationCutoff) VALUES (?, ?)`,
+    ).run(migrationId, migrationCutoff)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 
@@ -1151,6 +1222,9 @@ export function initAllHermesTables(): void {
     syncTable(WORKFLOWS_TABLE, WORKFLOWS_SCHEMA, {
       indexes: WORKFLOWS_INDEXES,
     })
+    syncTable(WORKFLOW_SCHEDULES_TABLE, WORKFLOW_SCHEDULES_SCHEMA, { indexes: WORKFLOW_SCHEDULES_INDEXES })
+    syncTable(WORKFLOW_SCHEDULE_TRIGGERS_TABLE, WORKFLOW_SCHEDULE_TRIGGERS_SCHEMA)
+    syncTable(WORKFLOW_SCHEDULE_EVENTS_TABLE, WORKFLOW_SCHEDULE_EVENTS_SCHEMA, { indexes: WORKFLOW_SCHEDULE_EVENTS_INDEXES })
     syncTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, {
       indexes: WORKFLOW_RUNS_INDEXES,
     })
@@ -1231,6 +1305,8 @@ export function initAllHermesTables(): void {
     // Group chat - basic tables
     syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)
     syncTable(GC_MESSAGES_TABLE, GC_MESSAGES_SCHEMA)
+    syncTable(GC_ACTIVITY_MIGRATIONS_TABLE, GC_ACTIVITY_MIGRATIONS_SCHEMA)
+    migrateGroupChatActivityTimes(db, Date.now())
     syncTable(GC_CONTEXT_SNAPSHOTS_TABLE, GC_CONTEXT_SNAPSHOTS_SCHEMA)
     syncTable(GC_ROOM_SUMMARIES_TABLE, GC_ROOM_SUMMARIES_SCHEMA)
     syncTable(GC_PENDING_SESSION_DELETES_TABLE, GC_PENDING_SESSION_DELETES_SCHEMA)

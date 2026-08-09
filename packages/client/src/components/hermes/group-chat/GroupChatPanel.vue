@@ -21,7 +21,7 @@ import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import SettingsCircuitBadge from '@/components/layout/SettingsCircuitBadge.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Attachment } from '@/stores/hermes/chat'
-import type { MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
+import type { GroupChatMention, MemberInfo, RoomAgent, RoomInfo, RoomSummaryAnchor, RoomSummaryConfig, RoomSummaryState } from '@/api/hermes/group-chat'
 import { useFilesStore } from '@/stores/hermes/files'
 import { useToolPanelStore } from '@/stores/hermes/tool-panel'
 import { hasDesktopBrowserBridge } from '@/utils/desktop-bridge'
@@ -74,6 +74,9 @@ const showCreateModal = ref(false)
 const showCloneModal = ref(false)
 const showAddAgentModal = ref(false)
 const showGroupChatRefactorNotice = ref(false)
+const showManualRoomLinkModal = ref(false)
+const manualRoomLink = ref('')
+const manualRoomLinkInput = ref<HTMLInputElement | null>(null)
 const showMemberRail = ref(true)
 const editingAgent = ref<RoomAgent | null>(null)
 const isSavingAgent = ref(false)
@@ -106,6 +109,7 @@ const inviteCodeDraft = ref('')
 const isSavingInviteCode = ref(false)
 const pendingAgentPairings = ref<GroupAgentPairingRequest[]>([])
 const isDecidingAgentPairing = ref(false)
+const clarifyResponse = ref('')
 const allowGuestAgentsDraft = ref(false)
 const maxGuestAgentsPerMemberDraft = ref(1)
 const allowRemoteWorkspaceAccessDraft = ref(false)
@@ -130,7 +134,7 @@ const roomContextMenuX = ref(0)
 const roomContextMenuY = ref(0)
 const groupChatInputRef = ref<(InstanceType<typeof GroupChatInput> & {
     addFiles?: (files: File[]) => void
-    insertMention?: (name: string) => void
+    insertMention?: (name: string, participantId?: string) => void
 }) | null>(null)
 const summarySettingsSectionRef = ref<HTMLElement | null>(null)
 const chatDropCounter = ref(0)
@@ -410,7 +414,7 @@ function canRemoveAgent(agent: RoomAgent): boolean {
 
 function handleMentionAgent(agent: RoomAgent) {
     if (agent.connectionStatus === 'offline') return
-    groupChatInputRef.value?.insertMention?.(agent.name)
+    groupChatInputRef.value?.insertMention?.(agent.name, agent.agentId)
 }
 
 function handleAgentRailAdd() {
@@ -490,8 +494,13 @@ function agentOwnerAvatar(agent: RoomAgent) {
     return owner ? memberAvatarFor(owner) : null
 }
 const visibleApproval = computed(() =>
-    currentRoomCanManage.value && pendingAgentPairings.value.length === 0
+    pendingAgentPairings.value.length === 0
         ? store.activePendingApproval
+        : null,
+)
+const visibleClarify = computed(() =>
+    currentRoomCanManage.value && pendingAgentPairings.value.length === 0
+        ? store.activePendingClarify
         : null,
 )
 const visibleAgentPairing = computed(() =>
@@ -844,9 +853,22 @@ function buildRoomUrl(roomId: string) {
 }
 
 async function copyRoomLink(roomId: string) {
-    const ok = await copyToClipboard(buildRoomUrl(roomId))
-    if (ok) message.success(t('common.copied'))
-    else message.error(t('chat.copyFailed'))
+    const roomLink = buildRoomUrl(roomId)
+    const ok = await copyToClipboard(roomLink)
+    if (ok) {
+        message.success(t('common.copied'))
+        return
+    }
+
+    manualRoomLink.value = roomLink
+    showManualRoomLinkModal.value = true
+}
+
+function selectManualRoomLink() {
+    void nextTick(() => {
+        manualRoomLinkInput.value?.focus()
+        manualRoomLinkInput.value?.select()
+    })
 }
 
 function copyCurrentRoomLink() {
@@ -942,9 +964,9 @@ async function handleSelectRoom(roomId: string) {
     }
 }
 
-async function handleSendMessage(content: string, attachments?: Attachment[]) {
+async function handleSendMessage(content: string, attachments?: Attachment[], mentions?: GroupChatMention[]) {
     try {
-        await store.sendMessage(content, attachments)
+        await store.sendMessage(content, attachments, mentions)
     } catch (err: any) {
         message.error(err.message)
     }
@@ -1466,9 +1488,20 @@ async function handleInterruptAgent(agent: RoomAgent) {
 }
 
 async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
-    if (!currentRoomCanManage.value) return
     try {
         await store.respondApproval(choice)
+    } catch (err: any) {
+        message.error(err.message || t('common.saveFailed'))
+    }
+}
+
+async function handleClarify(response?: string) {
+    if (!currentRoomCanManage.value) return
+    const finalResponse = response !== undefined ? response : clarifyResponse.value.trim()
+    if (response === undefined && !finalResponse) return
+    try {
+        await store.respondClarify(finalResponse)
+        clarifyResponse.value = ''
     } catch (err: any) {
         message.error(err.message || t('common.saveFailed'))
     }
@@ -1654,6 +1687,7 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                     :class="{
                                         'agent-avatar-rail-current-user': member.userId === store.userId,
                                         'agent-avatar-rail-typing': member.userId !== store.userId && store.isUserTyping(member.userId),
+                                        'agent-avatar-rail-offline': member.connectionStatus === 'offline',
                                     }"
                                     :title="member.userId === store.userId ? t('groupChat.yourName') : member.name"
                                     :aria-label="member.userId === store.userId ? t('groupChat.yourName') : member.name"
@@ -1702,7 +1736,10 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                 <button
                                     type="button"
                                     class="agent-avatar-rail-item"
-                                    :class="{ 'agent-avatar-rail-active': !!agentContextStatus(agent) }"
+                                    :class="{
+                                        'agent-avatar-rail-active': !!agentContextStatus(agent),
+                                        'agent-avatar-rail-offline': agent.connectionStatus === 'offline',
+                                    }"
                                     :aria-label="agent.name"
                                     :aria-busy="!!agentContextStatus(agent)"
                                     @click="handleAgentRailClick(agent)"
@@ -1855,6 +1892,38 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                                     </NButton>
                                     <NButton v-if="visibleApproval.isMemoryWrite || visibleApproval.choices.includes('deny')" size="small" type="error" secondary @click="handleApproval('deny')">
                                         {{ t('chat.approvalDeny') }}
+                                    </NButton>
+                                </div>
+                            </div>
+                        </Transition>
+                        <Transition name="approval-float">
+                            <div v-if="!visibleApproval && visibleClarify" class="approval-float-panel">
+                                <div class="approval-float-header">
+                                    <span class="approval-float-icon" aria-hidden="true">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10" />
+                                            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                                            <line x1="12" y1="17" x2="12.01" y2="17" />
+                                        </svg>
+                                    </span>
+                                    <span>{{ t('chat.clarifyKicker') }}</span>
+                                </div>
+                                <div class="approval-float-title">
+                                    <span v-if="visibleClarify.agentName">@{{ visibleClarify.agentName }} · </span>{{ t('chat.clarifyTitle') }}
+                                </div>
+                                <div class="approval-float-desc">{{ visibleClarify.question }}</div>
+                                <div v-if="visibleClarify.choices?.length" class="approval-float-actions">
+                                    <NButton v-for="choice in visibleClarify.choices" :key="choice" size="small" type="primary" @click="handleClarify(choice)">
+                                        {{ choice }}
+                                    </NButton>
+                                    <NButton size="small" type="error" secondary @click="handleClarify('')">
+                                        {{ t('chat.clarifyDismiss') }}
+                                    </NButton>
+                                </div>
+                                <div class="clarify-float-input-row">
+                                    <NInput v-model:value="clarifyResponse" size="small" :placeholder="t('chat.clarifyPlaceholder')" @keydown.enter.prevent="handleClarify()" />
+                                    <NButton size="small" type="primary" :disabled="!clarifyResponse.trim()" @click="handleClarify()">
+                                        {{ t('chat.clarifySubmit') }}
                                     </NButton>
                                 </div>
                             </div>
@@ -2214,6 +2283,32 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
                     </div>
                 </div>
             </div>
+            <NModal
+                v-model:show="showManualRoomLinkModal"
+                preset="dialog"
+                :title="t('groupChat.copyRoomLink')"
+                :aria-label="t('groupChat.copyRoomLink')"
+                style="width: 560px; max-width: 92vw"
+                @after-enter="selectManualRoomLink"
+            >
+                <p class="manual-room-link-hint">
+                    {{ t('groupChat.manualCopyRoomLinkHint') }}
+                </p>
+                <input
+                    ref="manualRoomLinkInput"
+                    class="manual-room-link-input"
+                    type="text"
+                    :value="manualRoomLink"
+                    :aria-label="t('groupChat.copyRoomLink')"
+                    readonly
+                    @click="selectManualRoomLink"
+                >
+                <template #action>
+                    <NButton type="primary" @click="showManualRoomLinkModal = false">
+                        {{ t('common.ok') }}
+                    </NButton>
+                </template>
+            </NModal>
             <NModal
                 v-model:show="showGroupChatRefactorNotice"
                 preset="dialog"
@@ -2676,6 +2771,15 @@ export default defineComponent({ components: { CreateRoomForm } })
     border-top: 1px solid $border-color;
 }
 
+.clarify-float-input-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px 4px 0;
+    border-top: 1px solid $border-color;
+}
+
 @media (max-width: 640px) {
     .approval-float-panel {
         left: 8px;
@@ -2801,6 +2905,30 @@ export default defineComponent({ components: { CreateRoomForm } })
         color: $text-primary;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
     }
+}
+
+.manual-room-link-hint {
+    margin: 0 0 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.manual-room-link-input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    outline: none;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font: inherit;
+}
+
+.manual-room-link-input:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 18%, transparent);
 }
 
 .room-list {
@@ -3071,6 +3199,15 @@ export default defineComponent({ components: { CreateRoomForm } })
 .agent-avatar-rail-active {
     border-color: transparent;
     animation: agent-avatar-rainbow-glow 4s linear infinite;
+}
+
+.agent-avatar-rail-offline {
+    border-color: rgba(var(--text-primary-rgb), 0.08);
+
+    .agent-avatar {
+        filter: grayscale(1);
+        opacity: 0.42;
+    }
 }
 
 .agent-avatar-activity-popover {

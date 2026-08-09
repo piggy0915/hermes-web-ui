@@ -5159,7 +5159,7 @@
           "Group Chat"
         ],
         "summary": "Create v1",
-        "description": "POST /api/hermes/group-chat/remote-workspace/v1",
+        "description": "Perform a JSON action against the current Agent run's shared group workspace.\nSupported actions are list, read, write, mkdir, and delete. JSON write actions\nonly update the workspace and do not publish an Agent attachment message.",
         "operationId": "remoteWorkspaceAction",
         "security": [
           {
@@ -5189,6 +5189,76 @@
             }
           }
         }
+      }
+    },
+    "/api/hermes/group-chat/remote-workspace/v1/file": {
+      "get": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Get file",
+        "description": "GET /api/hermes/group-chat/remote-workspace/v1/file",
+        "operationId": "downloadRemoteWorkspaceFile",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Group Chat"
+        ],
+        "summary": "Update file",
+        "description": "Upload a binary artifact to the current Agent run's shared group workspace.\nReturns its workspace path, checksum, generated attachment block, and messageId.\nA successful upload also publishes a separate Agent attachment message to the\nroom with the workspace-relative path as its text body and the image/file block\nin the same attachment format used by the message composer.",
+        "operationId": "uploadRemoteWorkspaceFileContent",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/api/hermes/group-chat/rooms": {
@@ -14510,6 +14580,32 @@
         "summary": "Get health",
         "description": "GET /health",
         "operationId": "healthCheck",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Get livez",
+        "description": "GET /livez",
+        "operationId": "livenessCheck",
         "security": [
           {
             "BearerAuth": []
