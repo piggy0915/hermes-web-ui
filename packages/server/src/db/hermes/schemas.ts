@@ -483,6 +483,52 @@ export const MCU_DEVICES_INDEXES = {
   idx_mcu_devices_created_at: 'CREATE INDEX IF NOT EXISTS idx_mcu_devices_created_at ON mcu_devices(created_at)',
 }
 
+// ============================================================================
+// App Connections
+// ============================================================================
+
+export const APP_CONNECTIONS_TABLE = 'app_connections'
+
+export const APP_CONNECTIONS_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  device_code: 'TEXT NOT NULL',
+  device_name: "TEXT NOT NULL DEFAULT ''",
+  device_brand: "TEXT NOT NULL DEFAULT ''",
+  device_model: "TEXT NOT NULL DEFAULT ''",
+  connection_type: "TEXT NOT NULL DEFAULT 'lan'",
+  user_id: 'INTEGER NOT NULL',
+  token_hash: "TEXT NOT NULL DEFAULT ''",
+  token_expires_at: 'INTEGER NOT NULL DEFAULT 0',
+  last_connected_at: 'INTEGER NOT NULL DEFAULT 0',
+  revoked_at: 'INTEGER',
+  cloud_revocation_pending: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+
+export const APP_CONNECTIONS_INDEXES = {
+  uniq_app_connections_device_type: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_app_connections_device_type ON app_connections(device_code, connection_type)',
+  idx_app_connections_user: 'CREATE INDEX IF NOT EXISTS idx_app_connections_user ON app_connections(user_id)',
+  idx_app_connections_updated_at: 'CREATE INDEX IF NOT EXISTS idx_app_connections_updated_at ON app_connections(updated_at)',
+}
+
+export const APP_AUTHORIZATION_CODES_TABLE = 'app_authorization_codes'
+
+export const APP_AUTHORIZATION_CODES_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY',
+  code_hash: 'TEXT NOT NULL UNIQUE',
+  created_by_user_id: 'INTEGER NOT NULL',
+  expires_at: 'INTEGER NOT NULL',
+  used_at: 'INTEGER',
+  used_by_device_code: "TEXT NOT NULL DEFAULT ''",
+  created_at: 'INTEGER NOT NULL',
+}
+
+export const APP_AUTHORIZATION_CODES_INDEXES = {
+  idx_app_authorization_codes_expires_at: 'CREATE INDEX IF NOT EXISTS idx_app_authorization_codes_expires_at ON app_authorization_codes(expires_at)',
+  idx_app_authorization_codes_created_by_user: 'CREATE INDEX IF NOT EXISTS idx_app_authorization_codes_created_by_user ON app_authorization_codes(created_by_user_id)',
+}
+
 export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
 
 export const STT_PROVIDER_SETTINGS_SCHEMA: Record<string, string> = {
@@ -603,6 +649,7 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   summaryModel: "TEXT NOT NULL DEFAULT ''",
   summaryApiMode: "TEXT NOT NULL DEFAULT ''",
   summaryEveryTurns: 'INTEGER NOT NULL DEFAULT 20',
+  summaryGeneration: 'INTEGER NOT NULL DEFAULT 0',
   triggerTokens: 'INTEGER NOT NULL DEFAULT 100000',
   maxHistoryTokens: 'INTEGER NOT NULL DEFAULT 32000',
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
@@ -615,6 +662,106 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   guestAgentApproval: "TEXT NOT NULL DEFAULT 'owner'",
   maxGuestAgentsPerMember: 'INTEGER NOT NULL DEFAULT 1',
   allowRemoteWorkspaceAccess: 'INTEGER NOT NULL DEFAULT 0',
+  agentHandoffEnabled: 'INTEGER NOT NULL DEFAULT 1',
+  agentHandoffMaxDepth: 'INTEGER',
+  agentHandoffUnlimited: 'INTEGER NOT NULL DEFAULT 0',
+}
+
+export const GC_HANDOFF_CHAINS_TABLE = 'gc_handoff_chains'
+
+export const GC_HANDOFF_CHAINS_SCHEMA: Record<string, string> = {
+  chainId: 'TEXT PRIMARY KEY',
+  roomId: 'TEXT NOT NULL',
+  sourceMessageId: 'TEXT NOT NULL',
+  currentDepth: 'INTEGER NOT NULL DEFAULT 0',
+  maxDepth: 'INTEGER',
+  unlimited: 'INTEGER NOT NULL DEFAULT 0',
+  targetAgentId: "TEXT NOT NULL DEFAULT ''",
+  status: "TEXT NOT NULL DEFAULT 'active'",
+  stopReason: "TEXT NOT NULL DEFAULT ''",
+  continueUsed: 'INTEGER NOT NULL DEFAULT 0',
+  attemptId: 'TEXT',
+  lastError: 'TEXT',
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+
+export const GC_HANDOFF_CHAINS_INDEXES = {
+  idx_gc_handoff_chains_room: 'CREATE INDEX idx_gc_handoff_chains_room ON gc_handoff_chains(roomId, updatedAt)',
+}
+
+export const GC_HANDOFF_ATTEMPTS_TABLE = 'gc_handoff_attempts'
+export const GC_HANDOFF_ATTEMPTS_SCHEMA: Record<string, string> = {
+  attemptId: 'TEXT PRIMARY KEY',
+  chainId: 'TEXT NOT NULL',
+  roomId: 'TEXT NOT NULL',
+  sourceInstanceId: "TEXT NOT NULL DEFAULT 'studio'",
+  targetAgentId: "TEXT NOT NULL DEFAULT ''",
+  targetSnapshot: "TEXT NOT NULL DEFAULT '{}'",
+  payloadDigest: "TEXT NOT NULL DEFAULT ''",
+  replacesAttemptId: 'TEXT',
+  status: "TEXT NOT NULL DEFAULT 'claimed'",
+  leaseUntil: 'INTEGER NOT NULL DEFAULT 0',
+  attemptCount: 'INTEGER NOT NULL DEFAULT 0',
+  lastError: 'TEXT',
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+export const GC_HANDOFF_ATTEMPTS_INDEXES = {
+  idx_gc_handoff_attempts_chain: 'CREATE UNIQUE INDEX idx_gc_handoff_attempts_chain ON gc_handoff_attempts(chainId)',
+  idx_gc_handoff_attempts_lease: 'CREATE INDEX idx_gc_handoff_attempts_lease ON gc_handoff_attempts(status, leaseUntil)',
+}
+
+export const GC_HANDOFF_OUTBOX_TABLE = 'gc_handoff_outbox'
+export const GC_HANDOFF_OUTBOX_SCHEMA: Record<string, string> = {
+  attemptId: 'TEXT PRIMARY KEY',
+  roomId: 'TEXT NOT NULL',
+  payload: 'TEXT NOT NULL',
+  status: "TEXT NOT NULL DEFAULT 'pending'",
+  availableAt: 'INTEGER NOT NULL DEFAULT 0',
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+export const GC_HANDOFF_OUTBOX_INDEXES = {
+  idx_gc_handoff_outbox_ready: 'CREATE INDEX idx_gc_handoff_outbox_ready ON gc_handoff_outbox(status, availableAt)',
+}
+
+export const GC_HANDOFF_DELIVERIES_TABLE = 'gc_handoff_deliveries'
+export const GC_HANDOFF_DELIVERIES_SCHEMA: Record<string, string> = {
+  attemptId: 'TEXT PRIMARY KEY',
+  targetAgentId: 'TEXT NOT NULL',
+  status: "TEXT NOT NULL DEFAULT 'accepted'",
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+export const GC_HANDOFF_DELIVERIES_INDEXES = {
+  idx_gc_handoff_deliveries_target: 'CREATE INDEX idx_gc_handoff_deliveries_target ON gc_handoff_deliveries(targetAgentId, status)',
+}
+
+export const GC_HANDOFF_INBOX_TABLE = 'gc_handoff_inbox'
+export const GC_HANDOFF_INBOX_SCHEMA: Record<string, string> = {
+  inboxId: 'TEXT PRIMARY KEY',
+  sourceInstanceId: "TEXT NOT NULL DEFAULT 'studio'",
+  attemptId: 'TEXT NOT NULL',
+  targetAgentId: 'TEXT NOT NULL',
+  targetSnapshot: "TEXT NOT NULL DEFAULT '{}'",
+  payloadDigest: "TEXT NOT NULL DEFAULT ''",
+  payload: "TEXT NOT NULL DEFAULT '{}'",
+  receipt: 'TEXT NOT NULL',
+  status: "TEXT NOT NULL DEFAULT 'admitted'",
+  stateVersion: 'INTEGER NOT NULL DEFAULT 1',
+  executionId: 'TEXT',
+  leaseUntil: 'INTEGER NOT NULL DEFAULT 0',
+  invocationStartedAt: 'INTEGER',
+  terminalMessageId: 'TEXT',
+  lastError: 'TEXT',
+  tombstone: 'TEXT',
+  createdAt: 'INTEGER NOT NULL',
+  updatedAt: 'INTEGER NOT NULL',
+}
+export const GC_HANDOFF_INBOX_INDEXES = {
+  idx_gc_handoff_inbox_attempt: 'CREATE UNIQUE INDEX idx_gc_handoff_inbox_attempt ON gc_handoff_inbox(sourceInstanceId, attemptId)',
+  idx_gc_handoff_inbox_ready: "CREATE INDEX idx_gc_handoff_inbox_ready ON gc_handoff_inbox(status, leaseUntil)",
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'
@@ -730,6 +877,10 @@ export const GC_ROOM_SUMMARIES_SCHEMA: Record<string, string> = {
   version: 'INTEGER NOT NULL DEFAULT 0',
   updatedAt: 'INTEGER NOT NULL DEFAULT 0',
   lastError: 'TEXT',
+  summaryRunToken: "TEXT NOT NULL DEFAULT ''",
+  summaryLeaseExpiresAt: 'INTEGER NOT NULL DEFAULT 0',
+  summaryRunGeneration: 'INTEGER NOT NULL DEFAULT 0',
+  summaryDrainThroughMessageId: "TEXT NOT NULL DEFAULT ''",
 }
 
 export const GC_ROOM_MEMBERS_TABLE = 'gc_room_members'
@@ -1296,6 +1447,14 @@ export function initAllHermesTables(): void {
       indexes: MCU_DEVICES_INDEXES,
     })
 
+    // App authorization codes and connected mobile devices
+    syncTable(APP_CONNECTIONS_TABLE, APP_CONNECTIONS_SCHEMA, {
+      indexes: APP_CONNECTIONS_INDEXES,
+    })
+    syncTable(APP_AUTHORIZATION_CODES_TABLE, APP_AUTHORIZATION_CODES_SCHEMA, {
+      indexes: APP_AUTHORIZATION_CODES_INDEXES,
+    })
+
     syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
       indexes: STT_PROVIDER_SETTINGS_INDEXES,
     })
@@ -1334,6 +1493,11 @@ export function initAllHermesTables(): void {
 
     // Group chat - basic tables
     syncTable(GC_ROOMS_TABLE, GC_ROOMS_SCHEMA)
+    syncTable(GC_HANDOFF_CHAINS_TABLE, GC_HANDOFF_CHAINS_SCHEMA, { indexes: GC_HANDOFF_CHAINS_INDEXES })
+    syncTable(GC_HANDOFF_ATTEMPTS_TABLE, GC_HANDOFF_ATTEMPTS_SCHEMA, { indexes: GC_HANDOFF_ATTEMPTS_INDEXES })
+    syncTable(GC_HANDOFF_OUTBOX_TABLE, GC_HANDOFF_OUTBOX_SCHEMA, { indexes: GC_HANDOFF_OUTBOX_INDEXES })
+    syncTable(GC_HANDOFF_DELIVERIES_TABLE, GC_HANDOFF_DELIVERIES_SCHEMA, { indexes: GC_HANDOFF_DELIVERIES_INDEXES })
+    syncTable(GC_HANDOFF_INBOX_TABLE, GC_HANDOFF_INBOX_SCHEMA, { indexes: GC_HANDOFF_INBOX_INDEXES })
     const groupChatMessageIndexes = {
       idx_gc_messages_context_window:
         "CREATE INDEX IF NOT EXISTS idx_gc_messages_context_window ON gc_messages(roomId, timestamp DESC, id DESC) WHERE COALESCE(tool_name, '') <> 'workspace_diff'",
