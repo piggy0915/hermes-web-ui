@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=nousresearch/hermes-agent:v2026.8.18
+ARG BASE_IMAGE=nousresearch/hermes-agent:main
 FROM ${BASE_IMAGE}
 
 ARG NODE_VERSION=24.19.0
@@ -51,6 +51,25 @@ COPY . .
 
 RUN npm run build && npm prune --omit=dev
 RUN npm run verify:sharp-runtime
+
+# ============================================
+# 步骤 10
+# ============================================
+# Web 与文档功能依赖：venv 继承官方基础镜像缺这些包，allow_lazy_installs=false 无法懒安装；
+# 2026-08-20 与 CLI 容器统一版本（firecrawl-py==4.37.0 等）
+RUN uv pip install --python /opt/hermes/.venv/bin/python3 \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    --extra-index-url https://pypi.org/simple \
+    'firecrawl-py>=4.37.0' \
+    'qdrant-client>=1.19.0' \
+    'playwright>=1.62.0' \
+    'websocket-client>=1.9.0'
+RUN sed -i 's/firecrawl-py==4\.17\.0/firecrawl-py>=4.17.0,<5/' /opt/hermes/tools/lazy_deps.py
+# firecrawl-anydoc 为 Rust 原生包，走官方 PyPI（与 CLI 容器 Dockerfile 一致）
+RUN uv pip install --python /opt/hermes/.venv/bin/python3 \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    --extra-index-url https://pypi.org/simple \
+    'firecrawl-anydoc>=0.1.9'
 
 ENV NODE_ENV=production
 ENV HOME=/home/agent
