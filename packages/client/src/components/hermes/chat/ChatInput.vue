@@ -6,6 +6,7 @@ import { useProfilesStore } from '@/stores/hermes/profiles'
 import { useSettingsStore } from '@/stores/hermes/settings'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
+import { fetchSocialMessagePlatforms } from '@/api/social-messages'
 import { fetchSkills, type SkillCategory, type SkillInfo } from '@/api/hermes/skills'
 import { deleteSkillBundleApi, fetchSkillBundles, type SkillBundleInfo } from '@/api/hermes/skill-bundles'
 import { NButton, NTooltip, NModal, NInputNumber, NPopover, NSlider, NDropdown, useDialog, useMessage, type DropdownOption } from 'naive-ui'
@@ -73,6 +74,9 @@ const reasoningEffortAccentStyle = computed(() => ({
     || reasoningEffortAccentColors[0],
 }))
 const isMoaSession = computed(() => chatStore.activeSession?.provider === 'moa')
+const isGlobalCodingAgentSession = computed(() =>
+  chatStore.activeSession?.codingAgentMode === 'global'
+)
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
   if (!v) return t('chat.reasoningEffort.defaultLabel')
@@ -456,6 +460,15 @@ const inputSettingsOptions = computed<DropdownOption[]>(() => [
       'aria-hidden': 'true',
     }, toolTraceVisible.value ? '✓' : ''),
   },
+  {
+    label: t('chat.pushEnabled'),
+    key: 'pushEnabled',
+    disabled: !chatStore.activeSessionId,
+    icon: () => h('span', {
+      class: ['settings-check', { active: Boolean(chatStore.activeSession?.pushEnabled) }],
+      'aria-hidden': 'true',
+    }, chatStore.activeSession?.pushEnabled ? '✓' : ''),
+  },
 ])
 
 function readDraftMap(): DraftMap {
@@ -502,7 +515,7 @@ onMounted(() => {
   })
 })
 
-function handleInputSettingsSelect(key: string | number) {
+async function handleInputSettingsSelect(key: string | number) {
   if (key === 'voiceMode') {
     if (chatStore.activeSessionId) emit('voiceClick')
     return
@@ -510,6 +523,29 @@ function handleInputSettingsSelect(key: string | number) {
 
   if (key === 'toolTrace') {
     toggleToolTraceVisible()
+    return
+  }
+
+  if (key === 'pushEnabled') {
+    const sessionId = chatStore.activeSessionId
+    if (!sessionId) return
+    const nextEnabled = !Boolean(chatStore.activeSession?.pushEnabled)
+    if (nextEnabled) {
+      try {
+        const platforms = await fetchSocialMessagePlatforms()
+        const pushReady = platforms.some(platform => (
+          platform.active && platform.configured && platform.pushReady
+        ))
+        if (!pushReady) {
+          message.warning(t('chat.pushNotConfigured'))
+          return
+        }
+      } catch {
+        message.warning(t('chat.pushNotConfigured'))
+        return
+      }
+    }
+    await chatStore.setSessionPushEnabled(sessionId, nextEnabled)
   }
 }
 
@@ -1145,7 +1181,7 @@ function isImage(type: string): boolean {
           </NTooltip>
 
           <NPopover
-            v-if="!isMoaSession"
+            v-if="!isMoaSession && !isGlobalCodingAgentSession"
             trigger="click"
             placement="top-start"
           >
