@@ -9,9 +9,7 @@ import type {
   MemoryMessage,
   MemoryNode,
   MemoryQuery,
-  MemorySessionState,
   MemoryStore,
-  MemorySummary,
 } from './types'
 
 const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
@@ -23,8 +21,6 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
       DROP TABLE IF EXISTS memory_embeddings;
       DROP TABLE IF EXISTS memory_audit_events;
       DROP TABLE IF EXISTS memory_nodes;
-      DROP TABLE IF EXISTS memory_session_state;
-      DROP TABLE IF EXISTS memory_summaries;
       DROP TABLE IF EXISTS memory_messages;
 
       CREATE TABLE IF NOT EXISTS memory_messages (
@@ -35,23 +31,6 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         metadata_json TEXT,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS memory_summaries (
-        row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        id TEXT NOT NULL UNIQUE,
-        session_id TEXT NOT NULL,
-        parent_summary_id TEXT,
-        from_message_id TEXT NOT NULL,
-        to_message_id TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        current_goal TEXT,
-        constraints_json TEXT NOT NULL DEFAULT '[]',
-        preferences_json TEXT NOT NULL DEFAULT '[]',
-        decisions_json TEXT NOT NULL DEFAULT '[]',
-        completed_work_json TEXT NOT NULL DEFAULT '[]',
-        pending_work_json TEXT NOT NULL DEFAULT '[]',
-        known_issues_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS memory_nodes (
@@ -97,16 +76,8 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         embedding BLOB NOT NULL,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS memory_session_state (
-        session_id TEXT PRIMARY KEY,
-        last_extracted_message_id TEXT,
-        last_summary_message_id TEXT,
-        updated_at TEXT NOT NULL
-      );
       CREATE INDEX IF NOT EXISTS idx_memory_messages_session_created
         ON memory_messages (session_id, row_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_summaries_session_created
-        ON memory_summaries (session_id, row_id);
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_lookup
         ON memory_nodes (profile_id, status, domain, type, importance, updated_at);
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_key
@@ -134,6 +105,29 @@ const MEMORY_MIGRATIONS: EkkoDatabaseMigration[] = [{
         WHERE status = 'active';
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_scope
         ON memory_nodes (profile_id, scope_type, scope_namespace, scope_id, status, updated_at);
+    `)
+  },
+}, {
+  component: 'memory',
+  version: 5,
+  migrate() {},
+}, {
+  component: 'memory',
+  version: 6,
+  migrate() {},
+}, {
+  component: 'memory',
+  version: 7,
+  migrate(db) {
+    db.exec(`DROP TABLE IF EXISTS memory_review_jobs;`)
+  },
+}, {
+  component: 'memory',
+  version: 8,
+  migrate(db) {
+    db.exec(`
+      DROP TABLE IF EXISTS memory_session_state;
+      DROP TABLE IF EXISTS memory_summaries;
     `)
   },
 }]
@@ -179,49 +173,30 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map(messageFromRow)
   }
 
-  async listMessagesAfter(input: { sessionId: string; messageId?: string; limit?: number }): Promise<MemoryMessage[]> {
+  async listMessagesAfter(input: {
+    sessionId: string
+    messageId?: string
+    throughMessageId?: string
+    limit?: number
+  }): Promise<MemoryMessage[]> {
     const after = input.messageId
       ? this.db.prepare('SELECT row_id FROM memory_messages WHERE id = ? AND session_id = ?').get(input.messageId, input.sessionId) as Row | undefined
       : undefined
+    const through = input.throughMessageId
+      ? this.db.prepare('SELECT row_id FROM memory_messages WHERE id = ? AND session_id = ?').get(input.throughMessageId, input.sessionId) as Row | undefined
+      : undefined
     const rows = this.db.prepare(`
       SELECT * FROM memory_messages
-      WHERE session_id = ? AND row_id > ?
+      WHERE session_id = ? AND row_id > ? AND row_id <= ?
       ORDER BY row_id ASC
       LIMIT ?
-    `).all(input.sessionId, Number(after?.row_id || 0), boundedLimit(input.limit ?? 100, 500)) as Row[]
+    `).all(
+      input.sessionId,
+      Number(after?.row_id || 0),
+      input.throughMessageId ? Number(through?.row_id || 0) : Number.MAX_SAFE_INTEGER,
+      boundedLimit(input.limit ?? 100, 500),
+    ) as Row[]
     return rows.map(messageFromRow)
-  }
-
-  async appendSummary(summary: MemorySummary): Promise<void> {
-    this.db.prepare(`
-      INSERT INTO memory_summaries (
-        id, session_id, parent_summary_id, from_message_id, to_message_id, summary,
-        current_goal, constraints_json, preferences_json, decisions_json,
-        completed_work_json, pending_work_json, known_issues_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      summary.id,
-      summary.sessionId,
-      summary.parentSummaryId ?? null,
-      summary.fromMessageId,
-      summary.toMessageId,
-      summary.summary,
-      summary.currentGoal ?? null,
-      JSON.stringify(summary.constraints),
-      JSON.stringify(summary.preferences),
-      JSON.stringify(summary.decisions),
-      JSON.stringify(summary.completedWork),
-      JSON.stringify(summary.pendingWork),
-      JSON.stringify(summary.knownIssues),
-      summary.createdAt,
-    )
-  }
-
-  async getLatestSummary(input: { sessionId: string }): Promise<MemorySummary | undefined> {
-    const row = this.db.prepare(
-      'SELECT * FROM memory_summaries WHERE session_id = ? ORDER BY row_id DESC LIMIT 1',
-    ).get(input.sessionId) as Row | undefined
-    return row ? summaryFromRow(row) : undefined
   }
 
   async getNode(id: string): Promise<MemoryNode | undefined> {
@@ -441,32 +416,13 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map(auditFromRow)
   }
 
-  async getSessionState(sessionId: string): Promise<MemorySessionState | undefined> {
-    const row = this.db.prepare('SELECT * FROM memory_session_state WHERE session_id = ?').get(sessionId) as Row | undefined
-    if (!row) return undefined
-    return {
-      sessionId: String(row.session_id),
-      lastExtractedMessageId: optionalString(row.last_extracted_message_id),
-      lastSummaryMessageId: optionalString(row.last_summary_message_id),
-      updatedAt: String(row.updated_at),
-    }
-  }
-
-  async setSessionState(state: MemorySessionState): Promise<void> {
-    this.db.prepare(`
-      INSERT INTO memory_session_state
-        (session_id, last_extracted_message_id, last_summary_message_id, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        last_extracted_message_id = excluded.last_extracted_message_id,
-        last_summary_message_id = excluded.last_summary_message_id,
-        updated_at = excluded.updated_at
-    `).run(
-      state.sessionId,
-      state.lastExtractedMessageId ?? null,
-      state.lastSummaryMessageId ?? null,
-      state.updatedAt,
-    )
+  rebuildSearchIndex(): void {
+    if (!this.ftsEnabled) return
+    this.databaseManager.transaction(() => {
+      this.db.exec('DELETE FROM memory_nodes_fts')
+      const rows = this.db.prepare('SELECT * FROM memory_nodes').all() as Row[]
+      for (const row of rows) this.syncFts(nodeFromRow(row))
+    })
   }
 
   close(): void {
@@ -600,25 +556,6 @@ function messageFromRow(row: Row): MemoryMessage {
     role: String(row.role) as MemoryMessage['role'],
     content: String(row.content),
     metadata: parseJsonObject(row.metadata_json),
-    createdAt: String(row.created_at),
-  }
-}
-
-function summaryFromRow(row: Row): MemorySummary {
-  return {
-    id: String(row.id),
-    sessionId: String(row.session_id),
-    parentSummaryId: optionalString(row.parent_summary_id),
-    fromMessageId: String(row.from_message_id),
-    toMessageId: String(row.to_message_id),
-    summary: String(row.summary),
-    currentGoal: optionalString(row.current_goal),
-    constraints: parseStringArray(row.constraints_json),
-    preferences: parseStringArray(row.preferences_json),
-    decisions: parseStringArray(row.decisions_json),
-    completedWork: parseStringArray(row.completed_work_json),
-    pendingWork: parseStringArray(row.pending_work_json),
-    knownIssues: parseStringArray(row.known_issues_json),
     createdAt: String(row.created_at),
   }
 }

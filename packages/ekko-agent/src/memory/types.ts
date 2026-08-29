@@ -38,7 +38,7 @@ export type MemoryNodeStatus = typeof MEMORY_NODE_STATUSES[number]
 export type MemoryKind = typeof MEMORY_KINDS[number]
 export type MemoryScopeType = typeof MEMORY_SCOPE_TYPES[number]
 export type MemoryMessageRole = 'system' | 'user' | 'assistant' | 'tool'
-export type MemoryReviewPolicy = 'automatic' | 'explicit-only'
+export type MemoryWritePolicy = 'automatic' | 'explicit-only'
 
 export type MemoryScope =
   | { type: 'profile' }
@@ -70,23 +70,6 @@ export interface MemoryEvidenceMessageInput {
   createdAt?: string
 }
 
-export interface MemorySummary {
-  id: string
-  sessionId: string
-  parentSummaryId?: string
-  fromMessageId: string
-  toMessageId: string
-  summary: string
-  currentGoal?: string
-  constraints: string[]
-  preferences: string[]
-  decisions: string[]
-  completedWork: string[]
-  pendingWork: string[]
-  knownIssues: string[]
-  createdAt: string
-}
-
 export interface MemoryNode {
   id: string
   parentId?: string
@@ -116,7 +99,7 @@ export interface MemoryNode {
 
 export interface MemoryAuditEvent {
   id: string
-  eventType: 'create' | 'update' | 'supersede' | 'expire' | 'delete' | 'extract' | 'summary'
+  eventType: 'create' | 'update' | 'supersede' | 'expire' | 'delete'
   nodeId?: string
   sessionId?: string
   profileId: string
@@ -178,7 +161,6 @@ export interface MemoryContextDiagnostics {
 }
 
 export interface MemoryContext {
-  latestSummary?: MemorySummary
   recentMessages: MemoryMessage[]
   activeTasks: MemoryNode[]
   relevantNodes: MemoryNode[]
@@ -197,43 +179,8 @@ export interface MemoryRuntimeIdentity {
   defaultWriteScope?: MemoryScope
 }
 
-export interface MemoryExtractionInput extends MemoryRuntimeIdentity {
-  previousSummary?: MemorySummary
-  messages: MemoryMessage[]
-}
-
-export interface MemoryExtractionOperation {
-  operation: 'create' | 'update' | 'supersede' | 'expire' | 'ignore'
-  kind?: MemoryKind
-  itemKey?: string
-  scope?: MemoryScope
-  targetId?: string
-  expectedRevision?: number
-  node: Partial<MemoryNode>
-  reason: string
-  explicitUserIntent?: boolean
-}
-
-export interface MemoryExtraction {
-  summaryPatch?: string
-  currentGoal?: string
-  constraints?: string[]
-  preferences?: string[]
-  decisions?: string[]
-  completedWork?: string[]
-  pendingWork?: string[]
-  knownIssues?: string[]
-  nodes: MemoryExtractionOperation[]
-  forceSummary?: boolean
-  fallbackReason?: string
-}
-
-export interface MemoryExtractor {
-  extract(input: MemoryExtractionInput): Promise<MemoryExtraction>
-}
-
-export interface MemoryProposeUpdateInput {
-  operation: 'create' | 'update' | 'supersede' | 'expire' | 'delete'
+export interface MemoryWriteInput {
+  operation: 'create' | 'update' | 'supersede' | 'expire'
   kind?: MemoryKind
   itemKey?: string
   scope?: MemoryScope
@@ -248,7 +195,7 @@ export interface MemoryProposeUpdateInput {
   identity?: Partial<MemoryRuntimeIdentity>
 }
 
-export interface MemoryProposeUpdateResult {
+export interface MemoryWriteResult {
   accepted: boolean
   nodeId?: string
   action?: 'created' | 'updated' | 'noop' | 'expired' | 'deleted'
@@ -286,7 +233,6 @@ export interface MemoryExpireInput {
 
 export interface MemoryDeleteInput extends MemoryExpireInput {
   mode?: 'soft' | 'hard'
-  confirmed?: boolean
 }
 
 export interface MemoryMessageListInput {
@@ -296,6 +242,8 @@ export interface MemoryMessageListInput {
 }
 
 export interface MemoryForgetInput {
+  all?: boolean
+  targets?: Array<{ id: string; expectedRevision: number }>
   id?: string
   expectedRevision?: number
   domain?: string
@@ -307,30 +255,24 @@ export interface MemoryForgetInput {
   reason: string
   actor?: string
   identity?: Partial<MemoryRuntimeIdentity>
-  confirmed?: boolean
 }
 
 export interface MemoryForgetResult {
   deletedIds: string[]
   deletedMemories?: MemoryNode[]
   mode: 'soft' | 'hard'
-  requiresConfirmation?: boolean
   reason?: string
-}
-
-export interface MemorySessionState {
-  sessionId: string
-  lastExtractedMessageId?: string
-  lastSummaryMessageId?: string
-  updatedAt: string
 }
 
 export interface MemoryStore {
   appendMessage(message: MemoryMessage): Promise<void>
   listRecentMessages(input: { sessionId: string; limit: number }): Promise<MemoryMessage[]>
-  listMessagesAfter(input: { sessionId: string; messageId?: string; limit?: number }): Promise<MemoryMessage[]>
-  appendSummary(summary: MemorySummary): Promise<void>
-  getLatestSummary(input: { sessionId: string }): Promise<MemorySummary | undefined>
+  listMessagesAfter(input: {
+    sessionId: string
+    messageId?: string
+    throughMessageId?: string
+    limit?: number
+  }): Promise<MemoryMessage[]>
   getNode(id: string): Promise<MemoryNode | undefined>
   upsertNode(node: MemoryNode, audit?: Omit<MemoryAuditEvent, 'id' | 'nodeId' | 'createdAt'>): Promise<void>
   supersedeNode(input: { oldNodeId: string; newNode: MemoryNode; reason: string; actor: string; sessionId?: string }): Promise<void>
@@ -339,7 +281,5 @@ export interface MemoryStore {
   queryNodes(query: MemoryQuery): Promise<MemoryNode[]>
   appendAuditEvent(event: MemoryAuditEvent): Promise<void>
   listAuditEvents(query?: MemoryAuditQuery): Promise<MemoryAuditEvent[]>
-  getSessionState(sessionId: string): Promise<MemorySessionState | undefined>
-  setSessionState(state: MemorySessionState): Promise<void>
   close(): void
 }

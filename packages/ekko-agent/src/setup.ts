@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { chmodSync, copyFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { EkkoDatabaseManager } from './database'
+import { EkkoDatabaseManager, EkkoDatabaseMigrationError } from './database'
 import {
   EkkoDirectoryManager,
   type EkkoDirectoryInitializationOptions,
@@ -50,6 +50,15 @@ import type {
 } from './config'
 import { EkkoAgentManager } from './agent/manager'
 import { EkkoProfileAgent } from './agent/profile-agent'
+
+const EKKO_DATABASE_RECOVERY_TABLES = [
+  'memory_messages',
+  'memory_nodes',
+  'memory_audit_events',
+  'memory_embeddings',
+  'sessions',
+  'messages',
+] as const
 
 export interface SetupEkkoAgentOptions extends EkkoDirectoryInitializationOptions {
   baseDirectory?: string
@@ -173,7 +182,6 @@ export class EkkoAgentSetup {
         recentMessageLimit: nextConfig.memory.recentMessageLimit,
         automaticRecallTokenBudget: nextConfig.memory.automaticRecallTokenBudget,
         searchResultLimit: nextConfig.memory.searchResultLimit,
-        reviewEveryUserMessages: nextConfig.memory.reviewEveryUserMessages,
       })
     })
     this.skill = new EkkoSkillManager(this.tool)
@@ -186,20 +194,55 @@ export class EkkoAgentSetup {
     this.runtime = new EkkoRuntimeManager({
       create: runtimeOptions => this.createRuntime(runtimeOptions),
     })
-    this.database = new EkkoDatabaseManager({
+    let database = new EkkoDatabaseManager({
       databasePath: this.layout.databasePath,
       env: options.env,
     })
-
+    let memoryStore: SqliteMemoryStore
+    let conversations: EkkoConversationStore
     try {
-      this.memoryStore = new SqliteMemoryStore(this.database)
-      this.memory = this.createMemoryService(config)
-      this.conversations = new EkkoConversationStore(this.database)
-      this.conversation = this.conversations
+      memoryStore = new SqliteMemoryStore(database)
+      conversations = new EkkoConversationStore(database)
     } catch (error) {
-      this.database.close()
-      throw error
+      database.close()
+      if (!(error instanceof EkkoDatabaseMigrationError) || error.lockFailure) throw error
+
+      const backupPath = database.quarantineForRebuild()
+      database = new EkkoDatabaseManager({
+        databasePath: this.layout.databasePath,
+        env: options.env,
+      })
+      try {
+        memoryStore = new SqliteMemoryStore(database)
+        conversations = new EkkoConversationStore(database)
+      } catch (rebuildError) {
+        database.restoreQuarantinedDatabase(backupPath)
+        throw new Error(
+          `Ekko database rebuild failed; the original database was restored from ${backupPath}.`,
+          { cause: rebuildError },
+        )
+      }
+
+      try {
+        const recovery = database.recoverCompatibleTables(backupPath, EKKO_DATABASE_RECOVERY_TABLES)
+        memoryStore.rebuildSearchIndex()
+        console.warn(
+          `[ekko-agent] database rebuilt after migration failure; backup=${backupPath}; ` +
+          `recovered=${JSON.stringify(recovery.recoveredTables)}; skipped=${JSON.stringify(recovery.skippedTables)}`,
+        )
+      } catch (recoveryError) {
+        console.warn(
+          `[ekko-agent] database rebuilt but data recovery could not read the backup at ${backupPath}: ` +
+          `${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        )
+      }
     }
+
+    this.database = database
+    this.memoryStore = memoryStore
+    this.memory = this.createMemoryService(config, memoryStore)
+    this.conversations = conversations
+    this.conversation = conversations
 
     this.agent = new EkkoAgentManager({
       create: profile => this.createProfileAgent(profile),
@@ -383,7 +426,7 @@ export class EkkoAgentSetup {
       modelDefaults,
       memory: memory === false
         ? undefined
-        : memory ?? (config.memory.enabled ? this.createMemoryService(config) : undefined),
+        : memory ?? (config.memory.enabled ? this.memory : undefined),
       logWriter: runtimeOverrides.logWriter ?? new EkkoFileLogger({
         directory: profileLayout.logDirectory,
         maxBytes: config.logging.maxBytes,
@@ -477,14 +520,13 @@ export class EkkoAgentSetup {
     })
   }
 
-  private createMemoryService(config: EkkoConfig): MemoryService {
+  private createMemoryService(config: EkkoConfig, store = this.memoryStore): MemoryService {
     return new MemoryService({
-      store: this.memoryStore,
+      store,
       enabled: config.memory.enabled,
       recentMessageLimit: config.memory.recentMessageLimit,
       automaticRecallTokenBudget: config.memory.automaticRecallTokenBudget,
       searchResultLimit: config.memory.searchResultLimit,
-      reviewEveryUserMessages: config.memory.reviewEveryUserMessages,
     })
   }
 }

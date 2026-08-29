@@ -15,7 +15,10 @@ import {
 } from '../../../../../ekko-agent/src'
 import { config } from '../../studio/public/config'
 import { logger } from '../../studio/public/logging'
-import { getProfilesBaseDir, listProfileNames } from '../../studio/public/profile-config'
+import {
+  getProfilesBaseDir,
+  listProfileNames,
+} from '../../studio/public/profile-config'
 import { denyPendingEkkoToolApprovals } from './approvals'
 import { cancelPendingEkkoClarifications } from './clarifications'
 

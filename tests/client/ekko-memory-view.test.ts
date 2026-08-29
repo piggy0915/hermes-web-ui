@@ -54,8 +54,8 @@ vi.mock('naive-ui', () => ({
   NModal: defineComponent({ props: { show: Boolean }, template: '<div v-if="show"><slot /></div>' }),
   NPopconfirm: defineComponent({ template: '<div><slot name="trigger" /><slot /></div>' }),
   NSelect: defineComponent({
-    props: { value: String }, emits: ['update:value'],
-    template: '<select class="n-select-stub" :value="value" @change="$emit(\'update:value\', $event.target.value)"><option value="active">active</option><option value="all">all</option></select>',
+    props: { value: String, options: Array }, emits: ['update:value'],
+    template: '<select class="n-select-stub" :value="value" @change="$emit(\'update:value\', $event.target.value)"><option v-for="option in options" :key="option.value" :value="option.value">{{ option.label }}</option></select>',
   }),
   NSpin: defineComponent({ props: { show: Boolean }, template: '<div class="n-spin-stub"><slot /></div>' }),
   NTag: defineComponent({ template: '<span class="n-tag-stub"><slot /></span>' }),
@@ -113,5 +113,13 @@ describe('Ekko MemoryView', () => {
       .find(button => button.text().includes('ekkoConfig.listView'))!
     await listButton.trigger('click')
     expect(wrapper.findAll('.memory-card')).toHaveLength(2)
+  })
+
+  it('shows only memory status filters and does not poll an approval queue', async () => {
+    wrapper = mount(MemoryView)
+    await flushPromises()
+
+    expect(wrapper.find('option[value="reviewing"]').exists()).toBe(false)
+    expect(wrapper.find('.memory-review-panel').exists()).toBe(false)
   })
 })

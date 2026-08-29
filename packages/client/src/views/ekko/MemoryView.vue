@@ -24,6 +24,7 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
 type MemoryViewMode = 'graph' | 'list'
+type MemoryStatusFilter = 'all' | EkkoMemoryStatus
 
 interface MemoryFlowNodeData {
   memory: EkkoMemoryNode
@@ -47,7 +48,7 @@ const { fitView } = useVueFlow('ekko-memory')
 const loading = ref(false)
 const saving = ref(false)
 const query = ref('')
-const status = ref<'all' | EkkoMemoryStatus>('active')
+const status = ref<MemoryStatusFilter>('active')
 const viewMode = ref<MemoryViewMode>('graph')
 const memories = ref<EkkoMemoryNode[]>([])
 const editing = ref<EkkoMemoryNode | null>(null)
@@ -63,7 +64,6 @@ const drawerWidth = ref(420)
 
 let disposed = false
 let loadGeneration = 0
-
 const statusOptions = computed(() => [
   { label: t('ekkoConfig.allStatuses'), value: 'all' },
   { label: t('ekkoConfig.statusActive'), value: 'active' },
@@ -93,7 +93,6 @@ const selectedRelations = computed(() => {
     return memory ? [{ edge, memory }] : []
   })
 })
-
 const flowNodes = computed(() => {
   const maxRows = Math.max(3, Math.min(7, Math.floor((graphHeight.value - 90) / 142)))
   const layout = layoutEkkoMemoryGraph(memories.value, graphEdges.value, { maxRows })

@@ -129,7 +129,6 @@ describe('Ekko configuration services', () => {
 
     const listed = await listEkkoMemory({ profile: 'work', status: 'active' }, setup)
     expect(listed).toMatchObject([{ id: created.nodeId, title: 'Editor theme' }])
-
     const updated = await updateEkkoMemory('work', created.nodeId!, {
       expectedRevision: created.node!.revision,
       title: 'IDE theme',
