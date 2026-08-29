@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto'
+import { chmodSync, copyFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { EkkoDatabaseManager } from './database'
 import {
   EkkoDirectoryManager,
   type EkkoDirectoryInitializationOptions,
   type EkkoDirectoryLayout,
-  type EkkoSkillImportResult,
 } from './directories'
 import { MemoryService } from './memory/service'
-import { resolveEkkoDatabasePath } from './memory/paths'
+import { resolveEkkoDataDirectory } from './memory/paths'
 import { SqliteMemoryStore } from './memory/store'
 import { EkkoToolApprovalService } from './tools/approval'
 import {
+  EkkoConfigError,
   EkkoConfigStore,
   type ConfiguredModelAuthorizationEntry,
   type ConfiguredModelProviderEntry,
@@ -51,6 +54,11 @@ import { EkkoProfileAgent } from './agent/profile-agent'
 export interface SetupEkkoAgentOptions extends EkkoDirectoryInitializationOptions {
   baseDirectory?: string
   profiles?: string[]
+  /**
+   * Installation-wide config patch applied to the canonical config before
+   * Profile agents and runtime services are created.
+   */
+  config?: EkkoConfigPatch
   env?: Record<string, string | undefined>
   packageRoot?: string
   authorizationRefresher?: EkkoModelAuthorizationRefresher
@@ -73,6 +81,32 @@ export interface CreateEkkoRuntimeOptions extends Omit<AgentRuntimeOptions, 'mem
   clientOptions?: ModelClientOptions
   /** Disable the shared memory service for this runtime without changing global config. */
   memory?: AgentRuntimeOptions['memory'] | false
+}
+
+function ensureStartupConfig(config: EkkoConfigStore): EkkoConfig {
+  try {
+    return config.ensureDefaults()
+  } catch (error) {
+    if (!(error instanceof EkkoConfigError)) throw error
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = join(
+      dirname(config.configPath),
+      `config.invalid-${timestamp}-${randomUUID()}.json`,
+    )
+    copyFileSync(config.configPath, backupPath)
+    try {
+      chmodSync(backupPath, 0o600)
+    } catch {
+      // Some filesystems do not expose POSIX permissions.
+    }
+
+    const recovered = config.reset()
+    console.warn(
+      `[ekko-agent] invalid config was backed up to ${backupPath}; defaults restored: ${error.message}`,
+    )
+    return recovered
+  }
 }
 
 /**
@@ -99,7 +133,6 @@ export class EkkoAgentSetup {
   readonly agent: EkkoAgentManager
   readonly agents: EkkoAgentManager
   readonly default: EkkoProfileAgent
-  readonly skillImport?: EkkoSkillImportResult
   private readonly profileLayouts = new Map<string, EkkoProfileDirectoryLayout>()
   private readonly directProfileProperties = new Set<string>()
   private currentToolApprovals: EkkoToolApprovalService
@@ -107,20 +140,20 @@ export class EkkoAgentSetup {
   private closed = false
 
   constructor(options: SetupEkkoAgentOptions = {}) {
-    this.directories = new EkkoDirectoryManager(options.baseDirectory)
-    this.layout = {
-      ...this.directories.initialize({
-        hermesRootDirectory: options.hermesRootDirectory,
-      }),
-      databasePath: resolveEkkoDatabasePath({
-        baseDirectory: options.baseDirectory,
-        env: options.env,
-        packageRoot: options.packageRoot,
-      }),
-    }
-    this.skillImport = this.directories.lastSkillImport
+    const dataDirectory = resolveEkkoDataDirectory({
+      baseDirectory: options.baseDirectory,
+      env: options.env,
+      packageRoot: options.packageRoot,
+    })
+    this.directories = new EkkoDirectoryManager(dirname(dataDirectory))
+    this.layout = this.directories.initialize({
+      hermesRootDirectory: options.hermesRootDirectory,
+    })
     this.config = new EkkoConfigStore({ configPath: this.layout.configPath })
-    const config = this.config.ensureDefaults()
+    const startupConfig = ensureStartupConfig(this.config)
+    const config = options.config
+      ? this.config.update(options.config)
+      : startupConfig
     this.authorizations = new EkkoModelAuthorizationManager({
       config: this.config,
       refresher: options.authorizationRefresher,
@@ -178,7 +211,6 @@ export class EkkoAgentSetup {
     const profiles = new Set([
       'default',
       ...this.directories.profileNames(),
-      ...(this.skillImport?.profiles ?? []),
       ...(options.profiles ?? []),
     ])
     try {

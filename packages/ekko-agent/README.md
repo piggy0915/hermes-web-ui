@@ -171,7 +171,11 @@ When Ekko runs inside a host that owns conversation persistence, the host also
 owns context compression. `estimateContext()` exposes the provider-visible
 system, tool, message, and provider-context estimate needed for that external
 threshold decision without starting a model call. A standalone Ekko host can
-instead implement and own its internal compression lifecycle.
+instead implement and own its internal compression lifecycle. The global
+`compression` config provides a host policy surface for future integrations:
+`enabled`, `threshold`, `targetRatio`, `protectLastN`, and `protectFirstN`.
+Hermes Studio currently continues to read compression policy from its main
+configuration and does not apply this Ekko config section.
 
 Model context and memory evidence are separate inputs. A host that adds derived
 summaries, retrieved context, routing instructions, or other application-owned
@@ -200,25 +204,31 @@ Call `new EkkoAgent()` (or the compatible `setupEkkoAgent()`) once during host
 startup, before accepting agent work.
 The setup entry owns `EkkoDirectoryManager`, creates
 `<base>/.ekko/config/config.json`, the skills, logs, and workspace directories,
-and opens and migrates the SQLite database. Development uses the package-local
-`sql-data/ekko-agent.db`; production uses `<base>/.ekko/ekko.db`. It returns
+and opens and migrates the SQLite database. Development keeps the complete
+layout under the package-local `.ekko` directory, including `.ekko/ekko.db`;
+production uses `<base>/.ekko/ekko.db`. It returns
 the shared database-backed memory and conversation stores and closes that
 process-level resource through `setup.close()`. The global JSON file drives
 runtime limits, model defaults and providers, tools, approvals, profile-scoped
-MCP servers, delegation, memory, skills, logging, and prompt instructions. Configuration upgrades merge
+MCP servers, delegation, context compression, memory, skills, logging, and
+prompt instructions. Configuration upgrades merge
 new defaults one field at a time: existing user values, arrays, and unknown
-forward-compatible fields are never replaced as a whole module. A configured
-profile uses
+forward-compatible fields are never replaced as a whole module. Startup
+validation upgrades older schemas in place. A malformed config or one written
+by a newer schema is copied to `config.invalid-<timestamp>-<uuid>.json` before
+the current defaults are restored, so startup continues without a restart;
+filesystem read failures remain fatal and never trigger replacement. A
+configured profile uses
 `<base>/.ekko/skills/<profile>` for its skills and
 `<base>/.ekko/logs/<profile>` for its log. Its default per-session workspace is
 `<base>/.ekko/workspace/<profile>/<session-id>`; an explicitly supplied
 `workspaceRoot` or `cwd` takes precedence. The server supplies its Web UI home as
-the base directory. For compatibility, the server supplies the Hermes root during
-initialization. If `.ekko/skills` does not exist yet, the manager imports
-the default profile from `<hermes>/skills` and every named profile from
-`<hermes>/profiles/<profile>/skills`. This is a one-time copy: once
-`.ekko/skills` exists, later startups do not resync or overwrite Ekko-owned
-skills imported from Hermes.
+the base directory. Ekko never imports or synchronizes Hermes Skills. During the
+first startup after upgrading from the legacy import behavior, the server supplies
+the Hermes root only as a read-only inventory: matching non-built-in copies are
+removed from Ekko-owned Profile directories, while the Hermes source directories
+are never changed. A migration marker prevents later startups from repeating the
+cleanup or removing Skills installed afterward.
 
 Each Profile may additionally reference read-only Skill roots through
 `skills.profiles.<profile>.externalDirectories`; those directories stay in
@@ -241,8 +251,8 @@ Local Skills take precedence over same-name external Skills. For example:
 }
 ```
 
-Ekko's package-owned built-in skills are separate from that compatibility
-import. Each Profile receives `1password`, `apple-notes`, `apple-reminders`,
+Ekko's package-owned built-in skills are the only Skills installed automatically.
+Each Profile receives `1password`, `apple-notes`, `apple-reminders`,
 `document-to-action-items`, `docx`, `gh-issues`, `github`,
 `grok-image-to-video`, `hermes-studio-installation`, `image-gen`,
 `node-inspect-debugger`, `obsidian`,
@@ -263,6 +273,10 @@ import { EkkoAgent } from 'ekko-agent'
 const ekko = new EkkoAgent({
   baseDirectory: '/path/to/base',
   profiles: ['work'],
+  config: {
+    runtime: { maxSteps: 60 },
+    compression: { threshold: 0.6, protectLastN: 16 },
+  },
 })
 ekko.config.setModelProvider('deepseek', {
   type: 'openai-compatible',
@@ -302,6 +316,11 @@ container. Every Profile gets an independent Agent instance with bound
 modules. Shared config, model Provider, authorization, and database modules are
 also reachable through each Profile Agent. `setupEkkoAgent(options)` returns
 the same facade for compatibility with the existing setup style.
+
+Pass `config: EkkoConfigPatch` to either constructor style to apply and persist
+installation-wide values before Profile agents and runtime services are
+created. Every top-level config section supports nested partial values;
+explicit per-run runtime options still take precedence over these defaults.
 
 `setup.config` is an `EkkoConfigStore`. It exposes `read`, `update`, `replace`,
 `reset`, MCP server CRUD, provider-preset CRUD, configured-provider CRUD,

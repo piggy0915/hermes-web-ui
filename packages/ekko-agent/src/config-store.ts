@@ -134,7 +134,7 @@ export class EkkoConfigStore {
   /** Add newly introduced default leaves without replacing user-owned values. */
   ensureDefaults(): EkkoConfig {
     const currentText = readFileSync(this.configPath, 'utf8')
-    const normalized = loadEkkoConfig(this.configPath)
+    const normalized = parseEkkoConfig(currentText)
     const normalizedText = `${JSON.stringify(normalized, null, 2)}\n`
     if (currentText !== normalizedText) return writeEkkoConfig(this.configPath, normalized)
     return normalized
@@ -486,6 +486,10 @@ export function loadEkkoConfig(configPath: string): EkkoConfig {
       `could not read config: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
+  return parseEkkoConfig(raw)
+}
+
+function parseEkkoConfig(raw: string): EkkoConfig {
   try {
     return normalizeEkkoConfig(JSON.parse(raw))
   } catch (error) {
@@ -540,6 +544,7 @@ export function normalizeEkkoConfig(value: unknown): EkkoConfig {
   const codeExec = record(tools.codeExec, 'tools.codeExec', true)
   const mcp = record(source.mcp, 'mcp', true)
   const delegation = record(source.delegation, 'delegation', true)
+  const compression = record(source.compression, 'compression', true)
   const memory = record(source.memory, 'memory', true)
   const skills = record(source.skills, 'skills', true)
   const logging = record(source.logging, 'logging', true)
@@ -667,6 +672,42 @@ export function normalizeEkkoConfig(value: unknown): EkkoConfig {
         1,
       ),
     },
+    compression: {
+      ...compression,
+      enabled: booleanValue(
+        compression.enabled,
+        DEFAULT_EKKO_CONFIG.compression.enabled,
+        'compression.enabled',
+      ),
+      threshold: boundedNumber(
+        compression.threshold,
+        DEFAULT_EKKO_CONFIG.compression.threshold,
+        'compression.threshold',
+        0.05,
+        0.95,
+      ),
+      targetRatio: boundedNumber(
+        compression.targetRatio,
+        DEFAULT_EKKO_CONFIG.compression.targetRatio,
+        'compression.targetRatio',
+        0.01,
+        0.8,
+      ),
+      protectLastN: boundedInteger(
+        compression.protectLastN,
+        DEFAULT_EKKO_CONFIG.compression.protectLastN,
+        'compression.protectLastN',
+        0,
+        500,
+      ),
+      protectFirstN: boundedInteger(
+        compression.protectFirstN,
+        DEFAULT_EKKO_CONFIG.compression.protectFirstN,
+        'compression.protectFirstN',
+        0,
+        100,
+      ),
+    },
     memory: {
       ...memory,
       enabled: booleanValue(memory.enabled, DEFAULT_EKKO_CONFIG.memory.enabled, 'memory.enabled'),
@@ -754,6 +795,7 @@ function mergeConfigPatch(current: EkkoConfig, patch: EkkoConfigPatch): JsonReco
       },
     },
     delegation: { ...current.delegation, ...patch.delegation },
+    compression: { ...current.compression, ...patch.compression },
     memory: { ...current.memory, ...patch.memory },
     skills: {
       ...current.skills,
@@ -1087,6 +1129,36 @@ function finiteNumber(value: unknown, path: string, minimum: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < minimum) {
     throw new EkkoConfigError(`must be a number greater than or equal to ${minimum}`, path)
+  }
+  return parsed
+}
+
+function boundedNumber(
+  value: unknown,
+  fallback: number,
+  path: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw new EkkoConfigError(`must be a number between ${minimum} and ${maximum}`, path)
+  }
+  return parsed
+}
+
+function boundedInteger(
+  value: unknown,
+  fallback: number,
+  path: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new EkkoConfigError(`must be an integer between ${minimum} and ${maximum}`, path)
   }
   return parsed
 }
