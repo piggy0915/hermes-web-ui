@@ -79,6 +79,7 @@ interface MockHermesApiOptions {
   socialMessageFeishuRecipients?: Record<string, unknown>
   socialMessageTelegramRecipients?: Record<string, unknown>
   socialMessageWeixinRecipients?: Record<string, unknown>
+  ttsActiveProviders?: Partial<Record<'default' | 'research', string>>
 }
 
 export const TEST_MODEL_GROUP = {
@@ -360,6 +361,15 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
         return
       }
       await route.fulfill(jsonResponse({ error: 'Method not allowed' }, 405))
+      return
+    }
+
+    if (pathname === '/api/studio/tts/settings' && request.method() === 'GET') {
+      const profile = request.headers()['x-hermes-profile'] === 'research' ? 'research' : 'default'
+      await route.fulfill(jsonResponse({
+        settings: [],
+        activeProvider: options.ttsActiveProviders?.[profile] || 'edge',
+      }))
       return
     }
 
@@ -867,9 +877,9 @@ export async function mockHermesApi(page: Page, options: MockHermesApiOptions = 
         mobile: {
           version: '1.0.0',
           channels: {
-            androidApk: { githubUrl: '', cloudflareUrl: '', online: false },
-            googlePlay: { url: '', online: false },
-            apple: { testFlightUrl: '', appStoreUrl: '', online: false },
+            androidApk: { version: '1.0.0', githubUrl: '', cloudflareUrl: '', online: false },
+            googlePlay: { version: '1.0.1', url: '', online: false },
+            apple: { version: '1.1.0', testFlightUrl: '', appStoreUrl: '', online: false },
             harmony: { url: '', online: false },
           },
         },
