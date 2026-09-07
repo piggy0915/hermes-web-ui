@@ -1,6 +1,7 @@
 import { socialMessagesEs } from '../social-messages-locales'
 
 export default {
+  agentAutoUpdate: { label: 'Actualizaciones automáticas' },
   ekkoConfig: {
     "settingsTitle": "Configuración",
     "settingsRuntime": "Ejecución",
@@ -1086,6 +1087,8 @@ export default {
     workspaceRecent: 'Reciente',
     defaultWorkspace: 'Espacio de trabajo predeterminado',
     more: 'Más',
+    sidePanel: 'Panel lateral',
+    sessionActions: 'Acciones de la sesión',
     workspace: 'Espacio de trabajo',
     setWorkspaceTitle: 'Definir workspace de sesión',
     setWorkspace: 'Definir workspace',
@@ -1427,6 +1430,10 @@ jobTriggered: 'Job ejecutado',
 
   // Models
   models: {
+    opencodeFreeHint: "No se necesita cuenta ni clave API. Los modelos gratuitos pueden tener límites de uso.",
+    opencodeFreeLoading: "Cargando modelos gratuitos en segundo plano…",
+    opencodeFreeRetry: "Falló la comprobación o actualización del catálogo. Se reintentará automáticamente y se conservará la caché.",
+    opencodeFreeUpgrade: "Actualiza Hermes Agent para usar OpenCode Free.",
     title: 'Modelos',
     addProvider: 'Anadir proveedor',
     noProviderPromptTitle: 'No hay proveedor de modelos configurado',
@@ -1921,7 +1928,11 @@ jobTriggered: 'Job ejecutado',
       themeDark: 'Oscuro',
       themeSystem: 'Sistema',
       chatInputHeight: 'Altura de entrada del chat',
-      chatInputHeightHint: 'Altura predeterminada de la entrada del chat en escritorio, en píxeles. En móvil se mantiene automática.'
+      chatInputHeightHint: 'Altura predeterminada de la entrada del chat en escritorio, en píxeles. En móvil se mantiene automática.',
+      linkOpenTarget: 'Abrir enlaces web en',
+      linkOpenTargetHint: 'Elige dónde se abren los enlaces de mensajes y vistas previas de Markdown.',
+      linkOpenTargetHermesStudio: 'Hermes Studio',
+      linkOpenTargetDefaultBrowser: 'Navegador predeterminado',
     },
     agent: {
       maxTurns: 'Turnos maximos',
@@ -3073,6 +3084,16 @@ jobTriggered: 'Job ejecutado',
   },
 
   changelog: {
+    new_0_7_18_1: 'OpenCode se incorpora como Coding Agent con reanudación de sesiones, llamadas a herramientas en streaming, configuración, memoria, Skills, flujos de trabajo y chats de grupo (#2890)',
+    new_0_7_18_2: 'Los grupos conectan Agents remotos mediante el relé en la nube; se mejoran el orden del streaming, la reconexión, la restauración de resúmenes, las imágenes compartidas, el plegado de herramientas y el diseño móvil (#2927)',
+    new_0_7_18_3: 'Se añaden ubicación móvil puntual, calendario y recordatorios; las acciones sensibles requieren consentimiento, el borrado se limita al elemento confirmado y se validan los plazos y el origen de las solicitudes (#2820, #2926)',
+    new_0_7_18_4: 'Menús de sesión unificados, creación de categorías al mover sesiones, conservación del estado plegado al actualizar y atajo Ctrl/Cmd + , para abrir ajustes (#2887, #2896, #2910, #2912)',
+    new_0_7_18_5: 'Vista previa de imágenes antes de enviarlas, enlaces a archivos locales con formato de código y Markdown del espacio de trabajo; referencias a mensajes mejoradas y flecha de respuesta restaurada (#2885, #2893, #2903, #2908)',
+    new_0_7_18_6: 'El sondeo de descargas Runtime se ejecuta bajo demanda solo para superadministradores; extracción Windows aislada con Node tar como alternativa e importaciones Bridge MCP corregidas para Runtimes Hermes separados (#2925)',
+    new_0_7_18_7: 'Los Coding Agents aíslan Runtimes MCP fallidos y limpian servidores eliminados; los lanzadores MCP de Studio usan explícitamente el modo Node para evitar ventanas Electron adicionales (#2888, #2920)',
+    new_0_7_18_8: 'Ekko se recupera de fallos repetidos de herramientas con mejor gestión de reintentos y errores (#2891)',
+    new_0_7_18_9: 'Se corrige la lectura de la línea siguiente cuando un valor de entorno está vacío, evitando URL de modelos y credenciales incorrectas (#2884)',
+    new_0_7_18_10: 'Se añade un enlace de compra en la página de descarga según el modo de acceso del manifiesto de versiones (#2895)',
     new_0_7_17_1: 'La configuración de Coding Agents ofrece ahora una navegación coherente y editores de Preferencias y Configuración a toda altura para Claude, Codex, Pi y Grok; Skills y MCP también comparten las tarjetas y controles de Studio (#2854, #2870, #2871)',
     new_0_7_17_2: 'Grok ahora reanuda turnos fallidos, muestra la configuración Runtime realmente aplicada y se instala desde el registro oficial de npm; la instalación de Codex también usa el registro oficial (#2855, #2857, #2868, #2881)',
     new_0_7_17_3: 'Ekko limita las salidas de herramientas demasiado grandes, refuerza el manejo de memoria y espacios de trabajo, y representa nombres de herramientas MCP incompatibles con proveedores de modelos (#2846, #2847, #2849)',

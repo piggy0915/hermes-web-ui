@@ -1,3 +1,5 @@
+import { OPENCODE_FREE_PROVIDER, openCodeFreeRuntime } from '../../studio/contracts/opencode-free'
+import { beginAgentPreparation } from './update-lock'
 import { execFile } from 'child_process'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'crypto'
 import { existsSync, readdirSync, realpathSync } from 'fs'
@@ -99,6 +101,7 @@ const LEGACY_HERMES_MCP_COMMANDS = new Set([
   'hermes-studio-mcp',
 ])
 const HERMES_MCP_MANAGED_ENV_KEY = 'HERMES_WEB_UI_MANAGED_MCP'
+const HERMES_STUDIO_SESSION_ENV_KEY = 'HERMES_STUDIO_SESSION_ID'
 const GLOBAL_CODEX_SHADOW_LINK_DIRS = new Set(['memories', 'plugins', 'rules', 'skills', 'vendor_imports', 'visualizations'])
 
 let cachedCodexVersion: { version: string; checkedAt: number } | null = null
@@ -201,10 +204,10 @@ async function decryptPiProxyApiKey(
   value: unknown,
   input: Record<string, unknown>,
   token: string,
-): Promise<string> {
+): Promise<string | null> {
   const encrypted = value as Partial<EncryptedPiProxyApiKey> | null
-  if ((encrypted?.v !== 1 && encrypted?.v !== 2) || encrypted.algorithm !== 'aes-256-gcm') return ''
-  if (!encrypted.iv || !encrypted.tag || !encrypted.ciphertext) return ''
+  if ((encrypted?.v !== 1 && encrypted?.v !== 2) || encrypted.algorithm !== 'aes-256-gcm') return null
+  if (!encrypted.iv || !encrypted.tag || typeof encrypted.ciphertext !== 'string') return null
   const key = await readOrCreatePiProxyTargetKey()
   const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(encrypted.iv, 'base64'))
   decipher.setAAD(encrypted.v === 1 ? PI_PROXY_TARGET_LEGACY_AAD : piProxyTargetAad(input, token))
@@ -741,6 +744,9 @@ async function resolveStoredProviderLaunchInput(
     ? normalizeStoredLaunchApiMode(existingSession?.api_mode)
     : undefined
   let apiMode = input.apiMode || storedApiMode
+  if (provider === OPENCODE_FREE_PROVIDER) {
+    return { ...input, profile, provider, model, workspace, ...openCodeFreeRuntime(model) }
+  }
   let canonicalProvider = provider
   const ignoredStaleProviderRuntime = belongsToDifferentBuiltinProvider(provider, baseUrl)
   if (ignoredStaleProviderRuntime) {
@@ -1140,6 +1146,7 @@ function hermesMcpServerConfig(profile: string, serverName: string, toolset: str
   return {
     ...hermesMcpCommandConfig(toolset),
     env: {
+      ELECTRON_RUN_AS_NODE: '1',
       HERMES_WEB_UI_URL: `http://127.0.0.1:${process.env.PORT || '8648'}`,
       HERMES_WEB_UI_HOME: appHome,
       HERMES_WEBUI_STATE_DIR: appHome,
@@ -1370,6 +1377,7 @@ function codexMcpConfigToml(
     if (Array.isArray(server.args) && server.args.length) lines.push(`args = ${tomlStringArray(server.args.map(String))}`)
     if (disabledManaged.has(item.name)) lines.push('enabled = false')
     lines.push(`startup_timeout_sec = ${typeof server.startup_timeout_sec === 'number' ? server.startup_timeout_sec : 120}`)
+    if (item.toolset === 'use') lines.push(`tool_timeout_sec = ${Math.max(360, Number(server.tool_timeout_sec) || 0)}`)
     if (server.env && typeof server.env === 'object' && !Array.isArray(server.env)) {
       lines.push(`env = ${tomlInlineStringTable(server.env as Record<string, string>)}`)
     }
@@ -1495,7 +1503,7 @@ function piMcpConfig(profile: string, ...externalContents: Array<string | null |
     .filter(item => !disabledManaged.has(item.name))
     .map((item) => {
     const server = managedHermesMcpServerConfig('pi', profile, item.name, item.toolset)
-    const requestTimeoutMs = item.toolset === 'api' || item.toolset === 'use' ? 120_000 : 1_860_000
+    const requestTimeoutMs = item.toolset === 'api' ? 120_000 : item.toolset === 'use' ? 360_000 : 1_860_000
     return [item.name, {
       ...server,
       lifecycle: 'lazy',
@@ -1692,7 +1700,7 @@ export function getCodingAgentManagedMcpServerConfigs(
   return Object.fromEntries(HERMES_MCP_SERVERS.map((item) => {
     const server = managedHermesMcpServerConfig(id, profile || 'default', item.name, item.toolset)
     if (id === 'pi') {
-      const requestTimeoutMs = item.toolset === 'api' || item.toolset === 'use' ? 120_000 : 1_860_000
+      const requestTimeoutMs = item.toolset === 'api' ? 120_000 : item.toolset === 'use' ? 360_000 : 1_860_000
       return [item.name, {
         ...server,
         lifecycle: 'lazy',
@@ -1706,6 +1714,7 @@ export function getCodingAgentManagedMcpServerConfigs(
       return [item.name, {
         ...server,
         startup_timeout_sec: 120,
+        ...(item.toolset === 'use' ? { tool_timeout_sec: Math.max(360, Number(server.tool_timeout_sec) || 0) } : {}),
         ...(disabledManaged.has(item.name) ? { enabled: false } : {}),
       }]
     }
@@ -1857,7 +1866,7 @@ export async function restorePersistedPiProxyTargets(): Promise<number> {
           sessionId: chatSessionId,
         }, null)
         const apiKey = String(resolved.apiKey || '').trim()
-        if (!apiKey) continue
+        if (!apiKey && provider !== OPENCODE_FREE_PROVIDER) continue
         content = await serializePiProxyTarget({
           profile,
           provider,
@@ -1880,12 +1889,14 @@ export async function restorePersistedPiProxyTargets(): Promise<number> {
       const legacyApiKey = String(input?.apiKey || '').trim()
       if (!input || typeof input !== 'object' || !token) continue
       const encryptedVersion = Number(persisted?.apiKeyEncrypted?.v || 0)
-      const apiKey = legacyApiKey || String(await decryptPiProxyApiKey(persisted?.apiKeyEncrypted, input, token) || '').trim()
+      const decrypted = legacyApiKey || await decryptPiProxyApiKey(persisted?.apiKeyEncrypted, input, token)
+      if (decrypted === null) continue
+      const apiKey = decrypted.trim()
       if (!String(input.profile || '').trim()
         || !String(input.provider || '').trim()
         || !String(input.model || '').trim()
         || !String(input.baseUrl || '').trim()
-        || !apiKey) continue
+        || (!apiKey && input.provider !== OPENCODE_FREE_PROVIDER)) continue
       const restoredInput = { ...input, apiKey }
       delete restoredInput.apiKeyEncrypted
       restoreCodexProxyTarget(restoredInput, token)
@@ -1986,7 +1997,7 @@ export async function restorePersistedCodexProxyTargets(): Promise<number> {
         sessionId: chatSessionId,
       }, null)
       const apiKey = String(resolved.apiKey || '').trim()
-      if (!profile || !provider || !model || !baseUrl || !apiKey) continue
+      if (!profile || !provider || !model || !baseUrl || (!apiKey && provider !== OPENCODE_FREE_PROVIDER)) continue
       restoreCodexProxyTarget({
         profile,
         provider,
@@ -3110,6 +3121,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       files = [{ key: 'prompt', path: 'APPEND_SYSTEM.md', absolutePath: promptFile }]
       args = ['--append-system-prompt', promptFile]
     }
+    const chatSessionId = String(input.sessionId || '').trim()
+    if (chatSessionId) env[HERMES_STUDIO_SESSION_ENV_KEY] = chatSessionId
     const shellCommand = buildLaunchShellCommand({
       workspaceDir,
       env,
@@ -3136,7 +3149,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   const provider = normalizeProviderIdentity(input.provider)
   const scope = normalizeConfigScope({ profile: input.profile, provider })
   const model = String(input.model || '').trim()
-  const apiKey = String(input.apiKey || '').trim()
+  const freeRuntime = provider === OPENCODE_FREE_PROVIDER ? openCodeFreeRuntime(model) : undefined
+  const apiKey = freeRuntime ? '' : String(input.apiKey || '').trim()
   assertScopedCodingAgentProviderAllowed(mode, provider)
   if (!model) {
     const err = new Error('Model is required')
@@ -3144,9 +3158,9 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     throw err
   }
 
-  const baseUrl = String(input.baseUrl || '').trim()
+  const baseUrl = freeRuntime?.baseUrl || String(input.baseUrl || '').trim()
   const preset = PROVIDER_PRESETS.find(item => item.value === provider)
-  const apiMode = normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
+  const apiMode = freeRuntime?.apiMode || normalizeLaunchApiMode(input.apiMode, preset?.api_mode || 'chat_completions')
   const reasoningEffort = String(input.reasoningEffort || '').trim()
   const groupSystemPrompt = String(input.groupSystemPrompt || '').trim()
   const scopedSystemPrompt = tool.id === 'pi' && groupSystemPrompt ? getSystemPrompt() : groupSystemPrompt || getSystemPrompt()
@@ -3182,7 +3196,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
 
   if (tool.id === 'claude-code') {
     const contextWindow = getModelContextLength({ profile: scope.profile, provider, model })
-    const proxyTarget = baseUrl && apiKey
+    const proxyTarget = baseUrl && (apiKey || freeRuntime)
       ? registerClaudeCodeProxyTarget({
           provider,
           model,
@@ -3252,7 +3266,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       ;(err as any).status = 400
       throw err
     }
-    const proxyTarget = baseUrl && apiKey
+    const proxyTarget = baseUrl && (apiKey || freeRuntime)
       ? registerCodexProxyTarget({
           profile: scope.profile,
           provider,
@@ -3344,7 +3358,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     // Claude Code and Codex homes. Each conversation still gets an isolated
     // runs/<hash> directory containing its provider credentials and sessions.
     await ensurePiScopedBaseConfigFiles(scope)
-    const proxyTarget = baseUrl && apiKey
+    const proxyTarget = baseUrl && (apiKey || freeRuntime)
       ? registerCodexProxyTarget({
           profile: scope.profile,
           provider,
@@ -3422,7 +3436,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
         : []),
     ]
   } else if (tool.id === 'grok') {
-    const proxyTarget = baseUrl && apiKey
+    const proxyTarget = baseUrl && (apiKey || freeRuntime)
       ? registerCodexProxyTarget({
           profile: scope.profile,
           provider,
@@ -3477,7 +3491,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       ...(reasoningEffort ? ['--reasoning-effort', reasoningEffort] : []),
     ]
   } else {
-    const proxyTarget = baseUrl && apiKey
+    const proxyTarget = baseUrl && (apiKey || freeRuntime)
       ? registerCodexProxyTarget({
           profile: scope.profile,
           provider,
@@ -3515,6 +3529,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     args = ['--model', `${OPENCODE_PROVIDER_ID}/${model}`]
   }
 
+  const chatSessionId = String(isolatedInput.sessionId || '').trim()
+  if (chatSessionId) env[HERMES_STUDIO_SESSION_ENV_KEY] = chatSessionId
   let shellCommand = buildLaunchShellCommand({
     workspaceDir,
     env,
@@ -3560,7 +3576,12 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
   }
 }
 
-export async function startCodingAgentRun(
+export async function startCodingAgentRun(id: string, input: CodingAgentLaunchInput & { sessionId: string }, state?: SessionState): Promise<CodingAgentRunStartResult> {
+  const release = beginAgentPreparation(id)
+  try { return await startCodingAgentRunInternal(id, input, state) } finally { release() }
+}
+
+async function startCodingAgentRunInternal(
   id: string,
   input: CodingAgentLaunchInput & { sessionId: string },
   state?: SessionState,
@@ -3584,7 +3605,7 @@ export async function startCodingAgentRun(
   const requestedMode = resolvedInput.mode === 'global' ? 'global' : 'scoped'
   const requestedProvider = String(resolvedInput.provider || '').trim().toLowerCase()
   assertScopedCodingAgentProviderAllowed(requestedMode, requestedProvider)
-  if (requestedMode !== 'global' && (!String(resolvedInput.baseUrl || '').trim() || !String(resolvedInput.apiKey || '').trim())) {
+  if (requestedMode !== 'global' && (!String(resolvedInput.baseUrl || '').trim() || (!String(resolvedInput.apiKey || '').trim() && requestedProvider !== OPENCODE_FREE_PROVIDER))) {
     const err = new Error('Coding agent provider credentials are missing. Re-select the provider/model or update the provider API key before continuing this session.')
     ;(err as any).status = 400
     throw err

@@ -5,6 +5,7 @@ import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { claudeProxyMessages, claudeProxyModels, registerClaudeCodeProxyTarget } from '../../packages/server/src/modules/coding-agents/services/claude-code/proxy'
 import {
+  revokeCodexProxyTargets,
   codexProxyModels,
   codexProxyResponses,
   isAuthorizedCodexProxyRequest,
@@ -1085,6 +1086,9 @@ describe('coding agent launch preparation', () => {
         HERMES_WEB_UI_MANAGED_MCP: '1',
       },
     })
+    for (const name of ['hermes-studio-api', 'hermes-studio-browser', 'hermes-studio-devices', 'hermes-studio-use']) {
+      expect(mcp.mcpServers[name].env.ELECTRON_RUN_AS_NODE).toBe('1')
+    }
     expect(mcp.mcpServers['hermes-studio-browser']).toMatchObject({
       command: process.execPath,
       args: [join(process.cwd(), 'bin/hermes-studio-mcp.mjs'), 'browser'],
@@ -1204,6 +1208,7 @@ describe('coding agent launch preparation', () => {
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-browser]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-devices]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-use]')
+    expect(codexConfig).toMatch(/\[mcp_servers.hermes-studio-use\][\s\S]*?tool_timeout_sec = 360/)
   })
 
   it('inherits external MCP configs for scoped Claude and Codex launches', async () => {
@@ -1332,6 +1337,7 @@ describe('coding agent launch preparation', () => {
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-browser]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-devices]')
     expect(codexConfig).toContain('[mcp_servers.hermes-studio-use]')
+    expect(codexConfig).toMatch(/\[mcp_servers.hermes-studio-use\][\s\S]*?tool_timeout_sec = 360/)
   })
 
   it('isolates Claude Code settings for hidden chat runs only', async () => {
@@ -1640,7 +1646,8 @@ describe('coding agent launch preparation', () => {
     expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "api"]`)
     expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "devices"]`)
     expect(config).toContain(`args = ["${join(process.cwd(), 'bin/hermes-studio-mcp.mjs')}", "use"]`)
-    expect(config).toContain(`env = { HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
+    expect(config).toContain('ELECTRON_RUN_AS_NODE = "1"')
+    expect(config).toContain(`HERMES_WEB_UI_URL = "http://127.0.0.1:8648", HERMES_WEB_UI_HOME = "${home}"`)
     expect(config).toContain('HERMES_WEBUI_STATE_DIR = "')
     expect(config).toContain('HERMES_WEB_UI_PROFILE = "default"')
     expect(config).toContain('HERMES_MCP_SERVER_NAME = "hermes-studio-api"')
@@ -1665,6 +1672,23 @@ describe('coding agent launch preparation', () => {
     expect(catalog.models[0].supported_reasoning_levels).toEqual(expect.arrayContaining([
       expect.objectContaining({ effort: 'max' }),
     ]))
+  })
+
+  it('binds managed mobile MCP calls to the current Studio chat session for Codex', async () => {
+    makeHome()
+
+    const result = await prepareCodingAgentLaunch('codex', {
+      profile: 'default',
+      provider: 'openrouter',
+      model: 'openai/gpt-oss-20b:free',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-test',
+      sessionId: 'studio-chat-session',
+    })
+
+    expect(result.env.HERMES_STUDIO_SESSION_ID).toBe('studio-chat-session')
+    expect(readFileSync(join(result.rootDir, 'launch.sh'), 'utf-8'))
+      .toContain('export HERMES_STUDIO_SESSION_ID=studio-chat-session')
   })
 
   it('runs scoped Grok through the local proxy without writing the upstream secret to disk', async () => {
@@ -3075,5 +3099,66 @@ describe('coding agent launch preparation', () => {
     expect(ids).toContain('claude-sonnet-4-6')
     expect(ids).toContain('claude-opus-4-7')
     expect(ids).toContain('cognitivecomputations/dolphin-mistral-24b-venice-edition:free')
+  })
+})
+
+
+describe('OpenCode Free coding agents', () => {
+  it.each(['claude-code', 'codex', 'pi', 'grok', 'opencode'])('prepares %s with a protected local proxy and no upstream key', async (id) => {
+    const home = makeHome()
+    if (id === 'pi') {
+      const adapter = join(home, 'coding-agent', 'pi-mcp-adapter', 'node_modules', 'pi-mcp-adapter', 'index.ts')
+      mkdirSync(dirname(adapter), { recursive: true })
+      writeFileSync(adapter, 'export default {}')
+    }
+    const launch = await prepareCodingAgentLaunch(id as any, {
+      profile: 'default', provider: 'opencode-free', model: 'mimo-v2.5-free', mode: 'scoped',
+    })
+    const contents = launch.files.map(file => readFileSync(file.absolutePath, 'utf8')).join('\n')
+    expect(contents).toMatch(/api\/(codex-proxy|claude-code-proxy)\//)
+    expect(contents + JSON.stringify(launch.env)).toContain('hwui_')
+    if (id === 'codex' || id === 'pi') {
+      revokeCodexProxyTargets('default', 'opencode-free')
+      const restored = id === 'pi' ? await restorePersistedPiProxyTargets() : await restorePersistedCodexProxyTargets()
+      expect(restored).toBeGreaterThan(0)
+    }
+  })
+
+  it.each([
+    ['mimo-v2.5-free', 'chat/completions'],
+    ['muse-spark-free', 'responses'],
+    ['qwen3-free', 'messages'],
+  ])('routes %s anonymously through both proxy protocols', async (model, endpoint) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'test', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }],
+      output: [], choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }],
+    }), { headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    for (const claude of [false, true]) {
+      const input = { profile: 'default', provider: 'opencode-free', model, baseUrl: 'https://stale.example', apiKey: 'stale-key' }
+      const target = claude ? registerClaudeCodeProxyTarget(input) : registerCodexProxyTarget(input)
+      const handler = claude ? claudeProxyMessages : codexProxyResponses
+      const body = { model, max_tokens: 16, messages: [{ role: 'user', content: 'hello' }], input: 'hello' }
+      const denied = makeProxyContext(target.routeKey, '', body)
+      await handler(denied)
+      expect(denied.status).toBe(401)
+      fetchMock.mockClear()
+      const ctx = makeProxyContext(target.routeKey, target.token, body)
+      await handler(ctx)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as any
+      expect(url).toBe(`https://opencode.ai/zen/v1/${endpoint}`)
+      const headers = new Headers(init.headers)
+      expect(headers.has('authorization')).toBe(false)
+      expect(headers.has('x-api-key')).toBe(false)
+      expect(JSON.parse(init.body).model).toBe(model)
+    }
+  })
+
+  it('rejects paid model IDs for the native anonymous provider', async () => {
+    makeHome()
+    await expect(prepareCodingAgentLaunch('codex', {
+      provider: 'opencode-free', model: 'gpt-5', mode: 'scoped',
+    })).rejects.toMatchObject({ status: 400 })
   })
 })

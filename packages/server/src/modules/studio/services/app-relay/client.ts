@@ -41,9 +41,11 @@ const ALLOWED_REQUEST_HEADERS = new Set([
 ])
 const ALLOWED_SOCKET_NAMESPACES = new Set(['/chat-run', '/group-chat', '/workflow', '/group-chat-agent-relay'])
 const ALLOWED_GROUP_AGENT_CLIENT_EVENTS = new Set([
-  'run.accepted', 'run.completed', 'run.failed', 'agent.event', 'agent.config.update', 'attachment.read', 'connector.revoke',
+  'run.accepted', 'run.completed', 'run.failed', 'agent.event', 'agent.events', 'agent.config.update', 'attachment.read', 'connector.revoke',
 ])
 const ALLOWED_CHAT_RUN_CLIENT_EVENTS = new Set([
+  'app.events.subscribe',
+  'app.events.unsubscribe',
   'run',
   'resume',
   'app.resume',
@@ -52,6 +54,8 @@ const ALLOWED_CHAT_RUN_CLIENT_EVENTS = new Set([
   'cancel_queued_run',
   'approval.respond',
   'clarify.respond',
+  'calendar.respond',
+  'reminder.respond',
   'location.respond',
 ])
 const ALLOWED_GROUP_CHAT_CLIENT_EVENTS = new Set([
@@ -617,15 +621,18 @@ export class AppRelayClient {
     localSocket.on('connect_error', (err: Error) => this.emitSocketEvent(bridge, 'connect_error', { message: err.message }))
     localSocket.on('disconnect', (reason: string) => this.emitSocketEvent(bridge, 'disconnect', { reason }))
     localSocket.onAny((event: string, ...args: unknown[]) => {
+      // Agent relay events carry one payload. Socket.IO recovery appends an
+      // offset argument which belongs to this local connection, not the relay.
+      const payload = namespace === '/group-chat-agent-relay' ? args[0] : args.length <= 1 ? args[0] : args
       if (namespace === '/group-chat-agent-relay' && typeof args.at(-1) === 'function') {
         const ack = args.pop() as (response: unknown) => void
         if (!this.socket?.connected) { ack({ error: 'Agent relay is disconnected' }); return }
         this.socket.timeout(330_000).emit('app.socket.event', {
-          id, namespace, event, payload: args.length <= 1 ? args[0] : args,
+          id, namespace, event, payload,
         }, (error: Error | null, response: unknown) => ack(error ? { error: 'Agent response timed out' } : response))
         return
       }
-      this.handleLocalSocketEvent(bridge, event, args.length <= 1 ? args[0] : args)
+      this.handleLocalSocketEvent(bridge, event, payload)
     })
     return { id, ok: true, namespace, stream: bridge.stream }
   }

@@ -110,6 +110,22 @@ describe('AppRelayClient', () => {
     await vi.waitFor(() => expect(denied).toHaveBeenCalledWith(expect.objectContaining({ ok: false })))
   })
 
+  it('forwards single Agent payloads without Socket.IO recovery offsets', async () => {
+    const { startAppRelayClient } = await import('../../packages/server/src/modules/studio/services/app-relay/client')
+    startAppRelayClient({ relayUrl: 'https://relay.example', machineId: 'hwui_machine_1234567890', publicKey: 'key', localBaseUrl: 'http://127.0.0.1:8648', fetchImpl: vi.fn() as any })
+    const remote = sockets[0]
+    remote.connected = true
+    remote.__handlers.get('app.socket.open')({ id: 'agent-recovery', namespace: '/group-chat-agent-relay', auth: {} }, vi.fn())
+    const local = sockets[1]
+    for (const event of ['relay.ready', 'run.request', 'run.interrupt', 'room.metadata', 'connector.revoked']) {
+      const payload = { agent: { name: 'Remote Agent' }, runId: 'run-1' }
+      local.__onAny(event, payload, 'recovery-offset')
+      expect(remote.emit).toHaveBeenLastCalledWith('app.socket.event', {
+        id: 'agent-recovery', namespace: '/group-chat-agent-relay', event, payload,
+      })
+    }
+  })
+
   it('forwards target-issued Agent request secrets and workspace hash preconditions', async () => {
     const { startAppRelayClient } = await import('../../packages/server/src/modules/studio/services/app-relay/client')
     const fetchImpl = vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
@@ -739,6 +755,51 @@ describe('AppRelayClient', () => {
       ok: true,
       namespace: '/workflow',
       event: 'workflow.status.subscribe',
+    })))
+  })
+
+  it('bridges unified App subscriptions through cloud relay transport', async () => {
+    const { startAppRelayClient } = await import('../../packages/server/src/modules/studio/services/app-relay/client')
+    startAppRelayClient({
+      relayUrl: 'https://relay.example.com',
+      machineId: 'hwui_machine_1234567890',
+      publicKey: 'machine-public-key',
+      localBaseUrl: 'http://127.0.0.1:8648',
+      fetchImpl: vi.fn() as any,
+    })
+    const remote = sockets[0]
+    const openAck = vi.fn()
+    remote.__handlers.get('app.socket.open')({
+      id: 'relay-workflow-1',
+      namespace: '/chat-run',
+      auth: { token: 'local-user-token', appEventVersion: 1 }, query: { profile: 'default' },
+    }, openAck)
+
+    const local = sockets[1]
+    expect(local.__url).toBe('http://127.0.0.1:8648/chat-run')
+    expect(local.__options).toMatchObject({ auth: { token: 'local-user-token', appEventVersion: 1 } })
+    expect(openAck).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'relay-workflow-1',
+      ok: true,
+      namespace: '/chat-run',
+    }))
+
+    local.emit.mockImplementation((event: string, payload: unknown, ack?: (response: unknown) => void) => {
+      if (event === 'app.events.subscribe') {
+        ack?.({ ok: true, data: { statuses: [{ workflowId: 'workflow-a', status: 'idle' }] } })
+      }
+    })
+    const eventAck = vi.fn()
+    remote.__handlers.get('app.socket.event')({
+      id: 'relay-workflow-1',
+      event: 'app.events.subscribe',
+      payload: { schema_version: 1, profile: 'default', types: ['workflow.run.completed'] },
+      ack: true,
+    }, eventAck)
+    await vi.waitFor(() => expect(eventAck).toHaveBeenCalledWith(expect.objectContaining({
+      ok: true,
+      namespace: '/chat-run',
+      event: 'app.events.subscribe',
     })))
   })
 })
