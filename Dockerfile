@@ -84,5 +84,8 @@ ENV PATH=/opt/hermes/.venv/bin:$PATH
 EXPOSE 6060
 
 # 强制覆盖基础镜像的默认启动脚本，让镜像本身具备独立运行的能力
-ENTRYPOINT ["/app/bin/start-studio-all.sh"]
+#ENTRYPOINT ["/app/bin/start-studio-all.sh"]
+#ENTRYPOINT ["sh", "-c", "chmod +x /app/bin/*.sh 2>/dev/null; exec /app/bin/start-studio-all.sh"]
+ENTRYPOINT ["sh", "-c", "sed -i 's/\\r$//' /app/bin/*.sh 2>/dev/null; chmod +x /app/bin/*.sh 2>/dev/null; exec /app/bin/start-studio-all.sh"]
+
 CMD []

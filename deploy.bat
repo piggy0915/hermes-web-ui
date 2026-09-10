@@ -48,12 +48,6 @@ if exist "%PROJECT_ROOT%\scripts" (
     echo   OK scripts
 )
 
-if exist "%PROJECT_ROOT%\tests" (
-    echo [6/8] Copying tests ...
-    xcopy "%PROJECT_ROOT%\tests" "%TARGET_DIR%\tests\" /E /I /Y >nul
-    echo   OK tests
-)
-
 if exist "%PROJECT_ROOT%\node_modules" (
     echo [7/8] Copying node_modules ...
     xcopy "%PROJECT_ROOT%\node_modules" "%TARGET_DIR%\node_modules\" /E /I /Y >nul
