@@ -71,6 +71,10 @@ RUN uv pip install --python /opt/hermes/.venv/bin/python3 \
     --extra-index-url https://pypi.org/simple \
     'firecrawl-anydoc>=0.1.9'
 
+# 修复换行符并设置权限
+RUN sed -i 's/\r$//' /app/bin/start-studio-all.sh && \
+    chmod +x /app/bin/start-studio-all.sh
+
 ENV NODE_ENV=production
 ENV HOME=/home/agent
 ENV HERMES_HOME=/home/agent/.hermes
