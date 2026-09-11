@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 未指定则用仓库根目录的公共基座；先执行 ./build.sh base
+        BASE_IMAGE: ${BASE_IMAGE:-hermes-base:main}
     image: ${WEBUI_IMAGE:-hermes-web-ui-local:latest}
     container_name: ${WEBUI_CONTAINER_NAME:-hermes-webui}
     ports:
