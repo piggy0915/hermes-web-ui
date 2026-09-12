@@ -24,12 +24,6 @@ if exist "%PROJECT_ROOT%\bin" (
     echo   OK bin
 )
 
-if exist "%PROJECT_ROOT%\dist" (
-    echo [2/8] Copying dist ...
-    xcopy "%PROJECT_ROOT%\dist" "%TARGET_DIR%\dist\" /E /I /Y >nul
-    echo   OK dist
-)
-
 if exist "%PROJECT_ROOT%\docs" (
     echo [3/8] Copying docs ...
     xcopy "%PROJECT_ROOT%\docs" "%TARGET_DIR%\docs\" /E /I /Y >nul
@@ -46,12 +40,6 @@ if exist "%PROJECT_ROOT%\scripts" (
     echo [5/8] Copying scripts ...
     xcopy "%PROJECT_ROOT%\scripts" "%TARGET_DIR%\scripts\" /E /I /Y >nul
     echo   OK scripts
-)
-
-if exist "%PROJECT_ROOT%\node_modules" (
-    echo [7/8] Copying node_modules ...
-    xcopy "%PROJECT_ROOT%\node_modules" "%TARGET_DIR%\node_modules\" /E /I /Y >nul
-    echo   OK node_modules
 )
 
 :: Copy root files
@@ -149,6 +137,11 @@ if exist "%PROJECT_ROOT%\vite.config.website.ts" (
 if exist "%PROJECT_ROOT%\vitest.config.ts" (
     copy "%PROJECT_ROOT%\vitest.config.ts" "%TARGET_DIR%\vitest.config.ts" /Y >nul
     echo   OK vitest.config.ts
+)
+
+if exist "%PROJECT_ROOT%\.dockerignore" (
+    copy "%PROJECT_ROOT%\.dockerignore" "%TARGET_DIR%\.dockerignore" /Y >nul
+    echo   OK .dockerignore
 )
 
 echo.
