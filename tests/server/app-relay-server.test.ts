@@ -876,7 +876,7 @@ describe('LocalAppRelayServer', () => {
     app.__handlers.get('socket.event')({
       id: 'terminal-1',
       event: 'terminal.read',
-      payload: { terminalId: 'terminal-a', lease: 'lease-a', cursor: 0 },
+      payload: { terminalId: 'terminal-a', lease: 'lease-a', cursor: 0, stream: true },
       ack: true,
     }, eventAck)
 
@@ -887,6 +887,11 @@ describe('LocalAppRelayServer', () => {
       event: 'terminal.read',
       payload: { ok: true, data: { chunks: [{ seq: 1, data: 'hello\r\n' }], cursor: 1 } },
     })))
+    const pushed = { terminalId: 'terminal-a', lease: 'lease-a', batch: 1, chunks: [{ seq: 1, data: 'echo' }], cursor: 1 }
+    local.__onAny('terminal.output', pushed)
+    expect(app.emit).toHaveBeenCalledWith('socket.event', expect.objectContaining({
+      id: 'terminal-1', namespace: '/terminal', event: 'terminal.output', payload: pushed,
+    }))
     const deniedAck = vi.fn()
     app.__handlers.get('socket.event')({ id: 'terminal-1', event: 'run', payload: {}, ack: true }, deniedAck)
     await vi.waitFor(() => expect(deniedAck).toHaveBeenCalledWith(expect.objectContaining({
@@ -894,7 +899,7 @@ describe('LocalAppRelayServer', () => {
     })))
   })
 
-  it('bridges unified App subscriptions over local and manually addressed relay', async () => {
+  it.each([['/chat-run', 'app.events.subscribe'], ['/group-chat', 'load_room_agent_activities']])('bridges %s %s over local and manually addressed relay', async (ns, event) => {
     const namespace = createMockNamespace()
     const io = { of: vi.fn(() => namespace) }
     const { LocalAppRelayServer } = await import('../../packages/server/src/modules/studio/services/app-relay/server')
@@ -913,30 +918,30 @@ describe('LocalAppRelayServer', () => {
     const openAck = vi.fn()
     app.__handlers.get('socket.open')({
       id: 'workflow-1',
-      namespace: '/chat-run',
+      namespace: ns,
       auth: { token: 'untrusted-token', appEventVersion: 1 }, query: { profile: 'default' },
     }, openAck)
 
     await vi.waitFor(() => expect(openAck).toHaveBeenCalledWith(expect.objectContaining({
       id: 'workflow-1',
       ok: true,
-      namespace: '/chat-run',
+      namespace: ns,
     })))
     expect(clientSocketMocks.io).toHaveBeenCalledWith(
-      'http://127.0.0.1:8748/chat-run',
+      `http://127.0.0.1:8748${ns}`,
       expect.objectContaining({ auth: { token: 'local-user-token', appEventVersion: 1 } }),
     )
 
     const local = clientSocketMocks.sockets[0]
-    local.emit.mockImplementation((event: string, payload: unknown, ack?: (response: unknown) => void) => {
-      if (event === 'app.events.subscribe') {
+    local.emit.mockImplementation((name: string, payload: unknown, ack?: (response: unknown) => void) => {
+      if (name === event) {
         ack?.({ ok: true, data: { statuses: [{ workflowId: 'workflow-a', status: 'idle' }] } })
       }
     })
     const eventAck = vi.fn()
     app.__handlers.get('socket.event')({
       id: 'workflow-1',
-      event: 'app.events.subscribe',
+      event,
       payload: { schema_version: 1, profile: 'default', types: ['workflow.run.completed'] },
       ack: true,
     }, eventAck)
@@ -944,8 +949,8 @@ describe('LocalAppRelayServer', () => {
     await vi.waitFor(() => expect(eventAck).toHaveBeenCalledWith(expect.objectContaining({
       id: 'workflow-1',
       ok: true,
-      namespace: '/chat-run',
-      event: 'app.events.subscribe',
+      namespace: ns,
+      event,
       payload: { ok: true, data: { statuses: [{ workflowId: 'workflow-a', status: 'idle' }] } },
     })))
   })
