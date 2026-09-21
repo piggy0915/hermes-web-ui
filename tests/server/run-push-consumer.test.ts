@@ -88,6 +88,12 @@ describe('user device APNs delivery', () => {
       ekko_run: { cloud_user_id: 107, run_kind: 'chat', session_id: 'session-a', run_id: 'runtime-a' } })
     expect(JSON.stringify(bodies)).not.toContain('push_')
   })
+
+  it('honors the session push opt-out for ordinary APNs too', async () => {
+    await register(); session.push_enabled = 0
+    await (await consumer())(event())
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
   it('never includes long private titles or generated output in push requests', async () => {
     await register()
     session.title = 'PRIVATE TITLE'.repeat(1000)
@@ -122,6 +128,29 @@ describe('user device APNs delivery', () => {
     const consume = await consumer()
     await consume(event({ subject: { session_id: 'session-a', run_id: 'runtime-a', message_id: '42' }, payload: { run_id: 'runtime-a', output: '' } }))
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).notification).toEqual({ title: 'Saved task', body: 'Persisted current reply' })
+  })
+  it('uses the terminal assistant message ahead of accumulated output on both Android and iOS', async () => {
+    vi.stubEnv('STUDIO_PUSH_CONTENT_PREVIEW', '1')
+    await register()
+    session.preview = 'Unrelated historical reply'
+    const completion = event({
+      subject: { session_id: 'session-a', run_id: 'runtime-a', message_id: '42' },
+      payload: { run_id: 'runtime-a', output: 'First progress reply. '.repeat(30) + 'Persisted current reply' },
+    })
+    const { appEventEnvelope } = await import('../../packages/server/src/modules/studio/services/webhooks/app-events')
+    expect(appEventEnvelope(completion)).toMatchObject({ display: { content: 'Persisted current reply' } })
+    await (await consumer())(completion)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).notification).toEqual({ title: 'Saved task', body: 'Persisted current reply' })
+  })
+  it('never falls back to session history on Android or iOS when the current reply is unavailable', async () => {
+    vi.stubEnv('STUDIO_PUSH_CONTENT_PREVIEW', '1')
+    await register()
+    session.preview = 'Unrelated historical reply'
+    const completion = event({ payload: { run_id: 'runtime-a', output: '' } })
+    const { appEventEnvelope } = await import('../../packages/server/src/modules/studio/services/webhooks/app-events')
+    expect(appEventEnvelope(completion)).toMatchObject({ display: { content: '' } })
+    await (await consumer())(completion)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).notification.body).toBe('')
   })
   it('mutes APNs without deleting registration and token refresh does not re-enable the connection', async () => {
     const a = await register(); await register(7, 'phone-b', 'bc')
