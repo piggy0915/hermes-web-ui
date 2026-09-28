@@ -1,3 +1,5 @@
+export const MAX_BROWSER_TABS = 12
+
 export type BrowserAgentControl = 'idle' | 'active' | 'waiting-for-user'
 export type BrowserProxyMode = 'direct' | 'system' | 'fixed_servers'
 
@@ -194,3 +196,18 @@ export type BrowserInteractAction =
   | { action: 'type'; ref: string; snapshot_id: string; text: string }
   | { action: 'press'; key: string }
   | { action: 'scroll'; direction: 'up' | 'down' | 'left' | 'right'; pixels?: number }
+
+export type BrowserBatchAction =
+  | { action: 'click'; ref: string }
+  | { action: 'type'; ref: string; text: string }
+  | { action: 'press'; key: string }
+  | { action: 'scroll'; direction: 'up' | 'down' | 'left' | 'right'; pixels?: number }
+
+export interface BrowserBatchResult {
+  tabId: string
+  completed: number
+  total: number
+  results: Array<{ index: number; action: BrowserBatchAction['action']; status: 'completed' | 'failed' | 'skipped'; error?: string }>
+  snapshot?: BrowserSnapshot
+  snapshotError?: string
+}
