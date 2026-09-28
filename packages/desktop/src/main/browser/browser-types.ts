@@ -96,6 +96,38 @@ export interface BrowserSnapshotNode {
   description?: string
   disabled?: boolean
   focused?: boolean
+  checked?: boolean | 'mixed'
+  selected?: boolean
+  expanded?: boolean
+  pressed?: boolean | 'mixed'
+}
+
+/** Observations are evidence, not a semantic assertion that the user's goal was met. */
+export interface BrowserObservation {
+  tabId?: string
+  status: 'observed' | 'unavailable'
+  changed?: boolean
+  changeCount?: number
+  changes?: Array<{ before?: BrowserSnapshotNode; after?: BrowserSnapshotNode }>
+  targets?: Array<{ before?: BrowserSnapshotNode; after?: BrowserSnapshotNode; valueMatches?: boolean }>
+  navigation?: 'same_document' | 'new_document'
+  openedTabs?: Array<Pick<DesktopBrowserTab, 'id' | 'title' | 'url'>>
+  hint: string
+}
+
+export interface BrowserInteractionResult extends DesktopBrowserTab {
+  snapshot?: BrowserSnapshot
+  snapshotError?: string
+  observation?: BrowserObservation
+}
+
+export interface BrowserSnapshotOptions {
+  snapshotId?: string
+  selector?: string
+  query?: string
+  interactiveOnly?: boolean
+  offset?: number
+  limit?: number
 }
 
 export interface BrowserSnapshot {
@@ -105,6 +137,15 @@ export interface BrowserSnapshot {
   title: string
   nodes: BrowserSnapshotNode[]
   text: string
+  totalNodes?: number
+  matchedNodes?: number
+  offset?: number
+  limit?: number
+  hasMore?: boolean
+  nextOffset?: number
+  truncated?: boolean
+  scope?: { selector?: string; query?: string; interactiveOnly?: boolean }
+  hint?: string
 }
 
 export type BrowserTextMode = 'innerText' | 'textContent'
@@ -210,4 +251,5 @@ export interface BrowserBatchResult {
   results: Array<{ index: number; action: BrowserBatchAction['action']; status: 'completed' | 'failed' | 'skipped'; error?: string }>
   snapshot?: BrowserSnapshot
   snapshotError?: string
+  observation?: BrowserObservation
 }

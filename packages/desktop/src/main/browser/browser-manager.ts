@@ -19,16 +19,19 @@ import { BrowserProfileStore } from './browser-profile-store'
 import { BrowserSessionCookieStore } from './browser-session-cookie-store'
 import { MAX_BROWSER_TABS } from './browser-types'
 import { BROWSER_BATCH_TIMEOUT_MS, parseBrowserBatchActions } from './browser-batch'
+import { observeBrowserState, type BrowserObservedState, type BrowserObservedTarget } from './browser-observation'
 import type {
   BrowserAgentControl,
   BrowserBatchResult,
   BrowserBounds,
   BrowserConsoleEntry,
   BrowserInteractAction,
+  BrowserInteractionResult,
   BrowserProfileCreateInput,
   BrowserProfileSwitchImpact,
   BrowserProfileUpdateInput,
   BrowserReadTextOptions,
+  BrowserSnapshotOptions,
   BrowserSelection,
   BrowserSitePermission,
   DesktopBrowserDownload,
@@ -45,6 +48,7 @@ interface TabRecord {
   htmlPreviewTitle?: string
   ephemeral?: boolean
   documentGeneration?: number
+  openerTabId?: string
 }
 
 interface BrowserManagerOptions {
@@ -60,26 +64,6 @@ const ANNOTATION_STATE_KEY = '__hermes_browser_annotation_state__'
 const SESSION_COOKIE_PERSIST_DELAY_MS = 750
 const SESSION_SHUTDOWN_TIMEOUT_MS = 2_000
 const HTML_PREVIEW_MAX_BYTES = 10 * 1024 * 1024
-
-const RISK_DIALOG_COPY = {
-  de: ['Agent-Aktion bestätigen', 'Diese Browser-Aktion kann eine wichtige Änderung ausführen:', 'Abbrechen', 'Einmal erlauben'],
-  en: ['Confirm Agent action', 'This browser action may perform an important change:', 'Cancel', 'Allow once'],
-  es: ['Confirmar acción del Agent', 'Esta acción del navegador puede realizar un cambio importante:', 'Cancelar', 'Permitir una vez'],
-  fr: ["Confirmer l’action de l’Agent", 'Cette action du navigateur peut effectuer une modification importante :', 'Annuler', 'Autoriser une fois'],
-  ja: ['Agent 操作を確認', 'このブラウザ操作は重要な変更を実行する可能性があります：', 'キャンセル', '今回のみ許可'],
-  ko: ['Agent 작업 확인', '이 브라우저 작업은 중요한 변경을 수행할 수 있습니다:', '취소', '한 번 허용'],
-  pt: ['Confirmar ação do Agent', 'Esta ação do navegador pode fazer uma alteração importante:', 'Cancelar', 'Permitir uma vez'],
-  ru: ['Подтвердите действие Agent', 'Это действие браузера может внести важное изменение:', 'Отмена', 'Разрешить один раз'],
-  'zh-TW': ['確認 Agent 操作', '此瀏覽器操作可能會執行重要變更：', '取消', '僅允許這一次'],
-  zh: ['确认 Agent 操作', '此浏览器操作可能会执行重要变更：', '取消', '仅允许这一次'],
-} as const
-
-function riskDialogCopy(): readonly [string, string, string, string] {
-  const locale = app.getLocale().toLowerCase()
-  if (locale.startsWith('zh-tw') || locale.startsWith('zh-hk')) return RISK_DIALOG_COPY['zh-TW']
-  const language = locale.split('-')[0] as keyof typeof RISK_DIALOG_COPY
-  return RISK_DIALOG_COPY[language] || RISK_DIALOG_COPY.en
-}
 
 function copyTab(tab: DesktopBrowserTab): DesktopBrowserTab {
   return { ...tab }
@@ -125,7 +109,6 @@ export class BrowserManager {
   private readonly automationVisibleTabs = new Set<string>()
   private readonly activeAnnotationTabs = new Set<string>()
   private readonly annotationMarkerCounts = new Map<string, number>()
-  private readonly agentDownloadGuardUntil = new Map<string, number>()
   private readonly stateListeners = new Set<(state: DesktopBrowserState) => void>()
   private activeProfileId = ''
   private activeTabId: string | undefined
@@ -193,11 +176,13 @@ export class BrowserManager {
     activate: boolean,
     waitForLoad: boolean,
     htmlPreview?: { dataUrl: string; title: string },
+    openerTabId?: string,
   ): Promise<DesktopBrowserTab> {
     const normalizedUrl = normalizeBrowserUrl(url, { allowBlank: true })
     const { record, loading } = await this.mutateTabs(async () => {
       const profile = this.requireProfile(this.activeProfileId)
       const record = await this.buildTab(profile, normalizedUrl)
+      record.openerTabId = openerTabId
       // Map insertion order is creation order, independent of tab activation.
       while (this.records.size >= MAX_BROWSER_TABS) {
         await this.closeTabRecord(this.records.keys().next().value!)
@@ -244,7 +229,6 @@ export class BrowserManager {
     this.window.contentView.removeChildView(record.view)
     this.automation.detach(tabId, contents)
     this.automationVisibleTabs.delete(tabId)
-    this.agentDownloadGuardUntil.delete(tabId)
     if (contents && !contents.isDestroyed()) contents.close()
     this.records.delete(tabId)
     if (this.activeTabId === tabId) this.activeTabId = [...this.records.keys()][Math.max(0, index - 1)]
@@ -399,9 +383,15 @@ export class BrowserManager {
     return this.state()
   }
 
-  async snapshot(tabId: string) {
+  async snapshot(tabId: string, options: BrowserSnapshotOptions = {}) {
     const record = this.requireTab(tabId)
-    return this.automation.snapshot(tabId, record.view.webContents)
+    let snapshot = await this.automation.snapshot(tabId, record.view.webContents, options)
+    // Loading tabs can expose only the document root for a short time. Never retry an action.
+    for (let attempt = 0; !options.snapshotId && snapshot.totalNodes! <= 1 && attempt < 3; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      snapshot = await this.automation.snapshot(tabId, record.view.webContents, options)
+    }
+    return snapshot
   }
 
   async readText(tabId: string, options: BrowserReadTextOptions) {
@@ -409,64 +399,92 @@ export class BrowserManager {
     return this.automation.readText(tabId, record.view.webContents, options)
   }
 
-  async interact(tabId: string, action: BrowserInteractAction, assertActive: () => void = () => {}): Promise<DesktopBrowserTab> {
+  async interact(tabId: string, action: BrowserInteractAction, assertActive: () => void = () => {}): Promise<BrowserInteractionResult> {
     assertActive()
     const record = this.requireTab(tabId)
-    const risk = this.automation.interactionRisk(tabId, action)
-    if (risk) {
-      const [title, message, cancel, allow] = riskDialogCopy()
-      const previousLabel = record.tab.agentLabel
-      this.setAgentControl(tabId, 'waiting-for-user', previousLabel, risk.kind)
-      let confirmationTimer: NodeJS.Timeout | undefined
-      let result: Awaited<ReturnType<typeof dialog.showMessageBox>>
-      try {
-        result = await Promise.race([
-          dialog.showMessageBox(this.window, {
-            type: 'warning',
-            title,
-            message,
-            detail: risk.label,
-            buttons: [cancel, allow],
-            defaultId: 0,
-            cancelId: 0,
-            noLink: true,
-          }),
-          new Promise<never>((_resolve, reject) => {
-            confirmationTimer = setTimeout(() => reject(new Error('High-risk browser confirmation timed out')), 25_000)
-            confirmationTimer.unref?.()
-          }),
-        ])
-        assertActive()
-      } catch (error) {
-        if (this.records.get(tabId) === record && record.tab.agentControl === 'waiting-for-user' && record.tab.agentLabel === previousLabel) {
-          this.setAgentControl(tabId, 'idle')
+    const before = this.automation.observedState(tabId)
+    const options = this.automation.snapshotSelection(tabId)
+    const targets = this.automation.observedTargets(tabId, 'snapshot_id' in action ? action.snapshot_id : undefined, [action])
+    const generation = record.documentGeneration || 0
+    const tabs = new Set(this.records.keys())
+    return this.withAutomationView(record, async () => {
+      await this.automation.interact(tabId, record.view.webContents, action, assertActive)
+      const evidence = await this.observeOperation(record, before, targets, options, generation, tabs, assertActive)
+      return { ...copyTab(record.tab), ...evidence }
+    })
+  }
+
+  private async observeOperation(
+    record: TabRecord, before: BrowserObservedState | undefined, targets: BrowserObservedTarget[],
+    options: BrowserSnapshotOptions, generation: number, tabs: Set<string>, assertActive: () => void,
+  ): Promise<Pick<BrowserInteractionResult, 'snapshot' | 'snapshotError' | 'observation'>> {
+    const tabId = record.tab.id
+    try {
+      assertActive()
+      const newDocument = () => (record.documentGeneration || 0) !== generation
+      const read = async () => {
+        try { return await this.snapshot(tabId, newDocument() ? {} : options) }
+        catch (error) {
+          // A clicked control may remove its own scoped region.
+          if (!options.selector) throw error
+          assertActive()
+          return this.snapshot(tabId)
         }
-        throw error
-      } finally {
-        if (confirmationTimer) clearTimeout(confirmationTimer)
       }
-      if (result.response !== 1) {
-        this.setAgentControl(tabId, 'idle')
-        throw new Error('High-risk browser action was declined by the user')
+      const observe = () => observeBrowserState(newDocument() ? undefined : before,
+        this.automation.observedState(tabId)!, newDocument() ? [] : targets)
+      let snapshot = await read()
+      let observation = observe()
+      // Read-only settling catches async rendering and popup creation; dispatched actions are never replayed.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        assertActive()
+        snapshot = await read()
+        observation = observe()
+        if (observation.changed && !record.view.webContents.isLoading()) break
       }
-      this.setAgentControl(tabId, 'active', previousLabel, action.action)
+      const openedTabs = [...this.records.values()].filter(item => !tabs.has(item.tab.id) && item.openerTabId === tabId)
+        .map(item => ({ id: item.tab.id, title: redactBrowserText(item.tab.title), url: publicBrowserUrl(item.tab.url) }))
+      observation.tabId = tabId
+      observation.navigation = newDocument() ? 'new_document' : before && before.url !== snapshot.url ? 'same_document' : undefined
+      if (newDocument()) observation.changed = true
+      if (openedTabs.length) {
+        observation.openedTabs = openedTabs
+        observation.changed = true
+        observation.hint = 'A new tab opened. Use its tab_id and snapshot to inspect the destination; the originating tab is not destination evidence.'
+        if (openedTabs.length === 1) snapshot = await this.snapshot(openedTabs[0].id)
+      }
+      assertActive()
+      return { snapshot, observation }
+    } catch (error) {
+      assertActive()
+      const message = redactBrowserText(error instanceof Error ? error.message : String(error), 500)
+      return { snapshotError: message, observation: { status: 'unavailable',
+        hint: 'The action was already dispatched, but follow-up evidence is unavailable. Read a fresh snapshot before deciding what to do; do not replay the action automatically.' } }
     }
-    await this.withAutomationView(record, () => this.automation.interact(tabId, record.view.webContents, action, assertActive))
-    return copyTab(record.tab)
   }
 
   async interactBatch(tabId: string, input: unknown, snapshotId: unknown, assertControl: () => void): Promise<BrowserBatchResult> {
+    assertControl()
+    const record = this.requireTab(tabId)
+    return this.withAutomationView(record, () => this.runBatch(tabId, input, snapshotId, assertControl))
+  }
+
+  private async runBatch(tabId: string, input: unknown, snapshotId: unknown, assertControl: () => void): Promise<BrowserBatchResult> {
     const actions = parseBrowserBatchActions(input)
     const record = this.requireTab(tabId)
+    const snapshotOptions = this.automation.snapshotSelection(tabId)
     const prepared = this.automation.prepareBatch(tabId, snapshotId, actions)
+    const before = this.automation.observedState(tabId)
+    const targets = this.automation.observedTargets(tabId, snapshotId, actions)
+    const tabs = new Set(this.records.keys())
     const generation = record.documentGeneration || 0
-    const originalUrl = record.view.webContents.getURL()
     const deadline = Date.now() + BROWSER_BATCH_TIMEOUT_MS
     const assertActive = () => {
       assertControl()
       if (Date.now() >= deadline) throw new Error('Browser batch timed out; remaining actions were skipped')
       if (this.records.get(tabId) !== record || record.view.webContents.isDestroyed()) throw new Error('Browser tab is closed')
-      if ((record.documentGeneration || 0) !== generation || record.view.webContents.getURL() !== originalUrl) {
+      if ((record.documentGeneration || 0) !== generation) {
         throw new Error('Browser page navigated; take a new snapshot before continuing')
       }
     }
@@ -481,7 +499,7 @@ export class BrowserManager {
         assertActive()
         const resolved = await this.automation.resolveBatchAction(tabId, record.view.webContents, prepared[index])
         assertActive()
-        await this.interact(tabId, resolved, assertActive)
+        await this.automation.interact(tabId, record.view.webContents, resolved, assertActive)
         result.completed += 1
         result.results.push({ index, action, status: 'completed' })
       } catch (error) {
@@ -491,7 +509,10 @@ export class BrowserManager {
     try {
       assertControl()
       if (Date.now() >= deadline) throw new Error('Browser batch timed out')
-      result.snapshot = await this.snapshot(tabId)
+      Object.assign(result, await this.observeOperation(record, before, targets.filter(target => target.actionIndex < result.completed), snapshotOptions, generation, tabs, () => {
+        assertControl()
+        if (Date.now() >= deadline) throw new Error('Browser batch timed out')
+      }))
       assertControl()
     } catch (error) {
       delete result.snapshot
@@ -515,7 +536,6 @@ export class BrowserManager {
 
   setAgentControl(tabId: string, control: BrowserAgentControl, label?: string, action?: string): void {
     const tab = this.requireTab(tabId).tab
-    if (control !== 'idle') this.agentDownloadGuardUntil.set(tabId, Date.now() + 5 * 60 * 1000)
     tab.agentControl = control
     tab.agentLabel = label
     tab.agentAction = action
@@ -796,7 +816,7 @@ export class BrowserManager {
     const contents = view.webContents
     contents.setWindowOpenHandler(details => {
       if (!isAllowedBrowserRequest(details.url)) return { action: 'deny' }
-      void this.createTab(details.url, true).catch(error => {
+      void this.openTab(details.url, true, false, undefined, id).catch(error => {
         console.warn('[desktop-browser] failed to open popup:', error)
       })
       return { action: 'deny' }
@@ -817,12 +837,15 @@ export class BrowserManager {
       record.documentGeneration = (record.documentGeneration || 0) + 1
       this.automation.invalidate(id)
     }
-    contents.on('did-start-loading', () => { tab.loading = true; invalidateDocument(); this.emitState() })
+    contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) invalidateDocument()
+    })
+    contents.on('did-start-loading', () => { tab.loading = true; this.emitState() })
     contents.on('did-stop-loading', () => { tab.loading = false; this.refreshTab(record); this.emitState() })
     contents.on('did-fail-load', () => { tab.loading = false; this.refreshTab(record); this.emitState() })
     const persistNavigation = () => { void this.persistTabs().catch(error => console.warn('[desktop-browser] failed to persist tabs:', error)) }
     contents.on('did-navigate', () => { this.refreshTab(record); invalidateDocument(); persistNavigation(); this.emitState() })
-    contents.on('did-navigate-in-page', () => { this.refreshTab(record); invalidateDocument(); persistNavigation(); this.emitState() })
+    contents.on('did-navigate-in-page', () => { this.refreshTab(record); this.automation.invalidate(id); persistNavigation(); this.emitState() })
     contents.on('page-title-updated', (_event, title) => {
       const isHtmlPreview = !!record.htmlPreviewTitle && contents.getURL().startsWith('data:text/html')
       tab.title = title || (isHtmlPreview ? record.htmlPreviewTitle || 'HTML Preview' : tab.url)
@@ -975,8 +998,7 @@ export class BrowserManager {
     const safeFileName = basename(item.getFilename()).replace(/[\u0000-\u001f]/g, '_') || 'download'
     const basePath = join(profile.downloadPath, safeFileName)
     const savePath = profile.downloadConflictPolicy === 'uniquify' ? nextDownloadPath(profile.downloadPath, safeFileName) : basePath
-    const askForPath = (this.agentDownloadGuardUntil.get(record.tab.id) || 0) > Date.now()
-      || profile.askBeforeDownload
+    const askForPath = profile.askBeforeDownload
       || (profile.downloadConflictPolicy === 'ask' && existsSync(basePath))
     // Electron only supports configuring the destination while will-download is
     // running. Its own dialog must handle prompted downloads; awaiting a separate
@@ -1062,16 +1084,21 @@ export class BrowserManager {
 
   private async withAutomationView<T>(record: TabRecord, operation: () => Promise<T>): Promise<T> {
     const tabId = record.tab.id
+    const contents = record.view.webContents
+    const throttled = contents.getBackgroundThrottling()
+    // Background/occluded windows otherwise delay page timers past the observation window.
+    contents.setBackgroundThrottling(false)
     const alreadyRendering = this.visible && this.activeTabId === tabId
-    if (!alreadyRendering) {
-      this.automationVisibleTabs.add(tabId)
-      this.syncViews()
-      await new Promise(resolve => setTimeout(resolve, 16))
-    }
-    record.view.webContents.focus()
     try {
+      if (!alreadyRendering) {
+        this.automationVisibleTabs.add(tabId)
+        this.syncViews()
+        await new Promise(resolve => setTimeout(resolve, 16))
+      }
+      contents.focus()
       return await operation()
     } finally {
+      if (!contents.isDestroyed()) contents.setBackgroundThrottling(throttled)
       if (!alreadyRendering) {
         this.automationVisibleTabs.delete(tabId)
         this.syncViews()
@@ -1090,7 +1117,6 @@ export class BrowserManager {
     this.automationVisibleTabs.clear()
     this.activeAnnotationTabs.clear()
     this.annotationMarkerCounts.clear()
-    this.agentDownloadGuardUntil.clear()
     this.activeTabId = undefined
   }
 

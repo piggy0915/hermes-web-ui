@@ -1359,6 +1359,8 @@ export * from './model/manager'
 
 export * from './model/messages'
 
+export * from './model/browser-context'
+
 export * from './model/provider-presets'
 
 export * from './model/provider-config'
@@ -2276,6 +2278,11 @@ export function authorizedModelProviderId(provider: string): AuthorizedModelProv
 
 export function authorizedModelProviderPreset( provider: string, accessToken?: string, ): AuthorizedModelProviderPreset | undefined
 ```
+### `src/model/browser-context.ts`
+
+```ts
+export function projectBrowserHistory<T extends BrowserHistoryMessage>(messages: T[], options: { truncateOtherTools?: (content: string) => string } = {}): T[]
+```
 ### `src/model/errors.ts`
 
 ```ts
@@ -3129,6 +3136,11 @@ export class EkkoSkillManager {
   runtimeSkills(profile = 'default'): AgentSkill[]
 }
 ```
+### `src/skills/review-evidence.ts`
+
+```ts
+export function skillReviewEvidence(messages: AgentMessage[])
+```
 ### `src/skills/review.ts`
 
 ```ts
@@ -3571,6 +3583,7 @@ export interface ToolResultSanitizerOptions {
   maxTextBytes?: number
   maxTextArtifactBytes?: number
   now?: number
+  compactJson?: boolean
 }
 
 export async function sanitizeAgentToolResult( result: AgentToolResult, options: ToolResultSanitizerOptions = {}, ): Promise<AgentToolResult>
@@ -3634,6 +3647,7 @@ export interface AgentToolContext {
   memoryDefaultWriteScope?: import('../memory/types').MemoryScope
   browserSessionId?: string
   mcpServers?: Record<string, unknown>
+  mcpSessionSignal?: AbortSignal
   timeoutMs?: number
   signal?: AbortSignal
   requestToolApproval?: AgentToolApprovalRequester

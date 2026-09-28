@@ -8,6 +8,12 @@ const envelope = { operation_id: 'op', result: snapshot }
 const enabled = { browserMatchEnabled: true, browserVerifyEnabled: true, hasApiKey: true, browserMatchTimeoutMs: 100, browserVerifyTimeoutMs: 100 }
 
 describe('browser MCP JEV orchestration', () => {
+  it.each([[401, 'auth_required'], [403, 'access_denied'], [429, 'rate_limited']])('diagnoses HTTP %s without exposing the response body', async (status, reason) => {
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('private credential/body'), { status }))
+    const result = await matchBrowserSnapshot(request, envelope, 'Next')
+    expect(result.result.elementMatch).toEqual({ status: 'unavailable', reason, stage: 'settings', httpStatus: status })
+    expect(JSON.stringify(result)).not.toContain('private credential')
+  })
   it('leaves legacy calls unchanged without settings requests or extra snapshots', async () => {
     const request = vi.fn(), read = vi.fn()
     expect(await matchBrowserSnapshot(request, envelope)).toBe(envelope)
@@ -39,7 +45,7 @@ describe('browser MCP JEV orchestration', () => {
     { tabId: 'tab', snapshotId: 'old', status: 'matched', ref: '@e1' },
     { tabId: 'tab', snapshotId: 'snapshot', status: 'matched', ref: '@e999' }])('declines mismatched or fabricated assessments', async assessment => {
     const request = vi.fn().mockResolvedValueOnce(enabled).mockResolvedValueOnce(assessment)
-    expect((await matchBrowserSnapshot(request, envelope, 'next')).result.elementMatch.status).toBe('unavailable')
+    expect((await matchBrowserSnapshot(request, envelope, 'next')).result.elementMatch).toMatchObject({ status: 'unavailable', reason: 'invalid_result', stage: 'assessment' })
   })
 
   it('reuses the completed batch snapshot and never changes completion or retries on a negative judgment', async () => {
@@ -57,6 +63,37 @@ describe('browser MCP JEV orchestration', () => {
     const result = await verifyBrowserResult(request, { result: { id: 'tab' } }, 'done', read)
     expect(result.result).toMatchObject({ id: 'tab', snapshot, verification: { status: 'met' } })
     expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('prioritizes operated controls and changed selection without forwarding input values', async () => {
+    const read = vi.fn()
+    const request = vi.fn().mockResolvedValueOnce(enabled).mockResolvedValueOnce({ tabId: 'tab', snapshotId: 'snapshot', status: 'met' })
+    await verifyBrowserResult(request, { result: { snapshot, observation: { status: 'observed', tabId: 'tab',
+      targets: [{ after: { ref: '@e201', role: 'textbox', name: 'Name', value: 'secret' }, valueMatches: true }],
+      changes: [{ after: { ref: '@e202', role: 'radio', name: 'Gold', checked: true, selected: false, pressed: 'mixed', expanded: false } }],
+    } } }, 'done', read)
+    const sent = request.mock.calls[1][1].body.snapshot
+    expect(sent.nodes[0]).toMatchObject({ ref: '@e201', actionTarget: true, valueMatches: true })
+    expect(sent.nodes[1]).toMatchObject({ ref: '@e202', checked: true, selected: false, pressed: 'mixed', expanded: false })
+    expect(JSON.stringify(sent)).not.toMatch(/secret|private|https:/)
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('does not mix originating-tab refs into a popup snapshot', async () => {
+    const request = vi.fn().mockResolvedValueOnce(enabled).mockResolvedValueOnce({ tabId: 'tab', snapshotId: 'snapshot', status: 'unknown' })
+    await verifyBrowserResult(request, { result: { snapshot, observation: { status: 'observed', tabId: 'origin',
+      targets: [{ after: { ref: '@e1', role: 'button', name: 'Origin only' } }],
+    } } }, 'done', vi.fn())
+    expect(request.mock.calls[1][1].body.snapshot.nodes[0].name).toBe('Next')
+  })
+
+  it('preserves local feedback when JEV is disabled without making any provider request', async () => {
+    const request = vi.fn().mockResolvedValue({ ...enabled, browserVerifyEnabled: false })
+    const result = { snapshot, observation: { status: 'observed', tabId: 'tab', changed: false } }
+    const output = await verifyBrowserResult(request, { result }, 'done', vi.fn())
+    expect(output.result).toMatchObject(result)
+    expect(output.result.verification).toEqual({ status: 'skipped', reason: 'disabled' })
+    expect(request).toHaveBeenCalledTimes(1)
   })
 
   it.each([{ total: 2, completed: 1, snapshot }, { total: 2, completed: 2, snapshotError: 'takeover' }])('does not reacquire or assess a failed batch', async result => {

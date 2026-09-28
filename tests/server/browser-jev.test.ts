@@ -74,11 +74,35 @@ describe('optional browser JEV assessments', () => {
     expect(upstream).not.toHaveBeenCalled()
   })
 
+  it.each(['Desktop', 'App', 'npm'])('finds %s behind more than 50 earlier nodes before applying the candidate budget', async label => {
+    await saveJevSettings('work', { apiKey: 'key', browserMatchEnabled: true, browserMatchCandidateLimit: 20 })
+    const nodes = Array.from({ length: 90 }, (_, index) => ({ ref: `@e${index + 1}`,
+      role: index % 2 ? 'button' : 'heading', name: `Unrelated item ${index}` }))
+    nodes.push({ ref: '@e91', role: 'tab', name: label })
+    expect(await matchBrowserElement('work', { target: `点击 ${label} 标签`, snapshot: { ...snapshot, nodes } }))
+      .toMatchObject({ status: 'matched', ref: '@e91', considered: 20 })
+    const body = JSON.parse(String(upstream.mock.calls[0][1]?.body))
+    expect(body.state.nodes[0].ref).toBe('@e91')
+    expect(body.state.nodes.some((node: any) => node.role === 'heading')).toBe(false)
+  })
+
   it.each(['met', 'not_met', 'unknown'])('reports outcome %s without inventing execution status', async decision => {
     await saveJevSettings('work', { apiKey: 'key', browserVerifyEnabled: true })
     upstream.mockImplementation(async () => reply(decision))
     expect(await verifyBrowserOutcome('work', input)).toMatchObject({ status: decision, confidence: 0.95 })
     expect(JSON.stringify(upstream.mock.calls[0][1]?.body)).not.toMatch(/input-secret|secret-description|raw secret|https:/)
+  })
+
+  it('preserves boolean and mixed control states while rejecting unrelated evidence fields', async () => {
+    await saveJevSettings('work', { apiKey: 'key', browserVerifyEnabled: true })
+    upstream.mockImplementation(async () => reply('met'))
+    await verifyBrowserOutcome('work', { ...input, snapshot: { ...snapshot, nodes: [{ ref: '@e1', role: 'radio', name: 'Gold',
+      checked: true, selected: false, pressed: 'mixed', expanded: false, actionTarget: true, valueMatches: false,
+      value: 'input-secret', description: 'private', focused: 'untrusted' }] } })
+    const body = JSON.parse(String(upstream.mock.calls[0][1]?.body))
+    expect(body.state.nodes).toEqual([{ ref: '@e1', role: 'radio', name: 'Gold', checked: true,
+      selected: false, pressed: 'mixed', expanded: false, actionTarget: true, valueMatches: false }])
+    expect(JSON.stringify(body)).not.toMatch(/input-secret|private|https:/)
   })
 
   it.each([matchBrowserElement, verifyBrowserOutcome])('falls back on provider, malformed and low-confidence responses', async assess => {
@@ -91,6 +115,14 @@ describe('optional browser JEV assessments', () => {
     expect(await assess('work', input)).toMatchObject({ status: 'unavailable', reason: 'low_confidence' })
     upstream.mockResolvedValueOnce(Response.json({ answers: {} }))
     expect(await assess('work', input)).toMatchObject({ status: 'unavailable' })
+  })
+
+  it.each([[401, 'provider_auth_failed'], [429, 'rate_limited']])('preserves provider HTTP %s as a safe diagnostic', async (status, reason) => {
+    await saveJevSettings('work', { apiKey: 'key', browserMatchEnabled: true })
+    upstream.mockResolvedValue(Response.json({ error: 'private provider body' }, { status: Number(status) }))
+    const result = await matchBrowserElement('work', input)
+    expect(result).toMatchObject({ status: 'unavailable', reason })
+    expect(JSON.stringify(result)).not.toContain('private provider body')
   })
 
   it.each([matchBrowserElement, verifyBrowserOutcome])('bounds non-cooperative upstream calls and propagates cancellation', async assess => {
