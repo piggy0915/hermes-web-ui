@@ -1,4 +1,5 @@
-import { withRunUsage } from '../repositories/run-usage-store'
+import { withRunUsage, onRunUsageUpdated } from '../repositories/run-usage-store'
+import { agentFamilyForRuntime, isAgentRuntime } from '../contracts/agents/runtime'
 import { recordSessionUploadAttachments } from '../services/files/session-uploads'
 import { authenticateSessionShare, socketShareToken, assertShareProfile, sessionShareExecutionUser, refreshSessionShare, type SessionShareAccess } from '../services/session-shares/access'
 import { bindSessionShareSocket } from '../services/session-shares/socket-access'
@@ -437,9 +438,26 @@ export class ChatRunSocket {
   private backgroundPollRetryAt = 0
   private backgroundActivityGraceUntil = 0
   private closing = false
+  private stopUsageUpdates: () => void
 
   constructor(io: Server) {
     this.nsp = io.of('/chat-run')
+    this.stopUsageUpdates = onRunUsageUpdated((sessionId, summary) => {
+      const session = getSession(sessionId)
+      const isCoding = session && session.agent !== 'ekko-agent' && (session.source === 'coding_agent'
+        || (isAgentRuntime(session.agent) && agentFamilyForRuntime(session.agent) === 'coding')
+        || session.agent === 'claude' || session.agent === 'claude_code')
+      const totals = isCoding ? {
+        inputTokens: session.input_tokens, outputTokens: session.output_tokens,
+        cacheReadTokens: session.cache_read_tokens, cacheWriteTokens: session.cache_write_tokens,
+      } : undefined
+      const state = this.sessionMap.get(sessionId)
+      if (state && totals) Object.assign(state, totals)
+      this.emitExternalEvent(sessionId, 'run.usage.updated', {
+        event: 'run.usage.updated', session_id: sessionId, run_id: summary.runId,
+        message_id: summary.assistantMessageId, run_usage: summary, ...totals,
+      })
+    })
   }
 
   getLiveActivityPlans() {
@@ -852,6 +870,23 @@ export class ChatRunSocket {
       }
       return sessionProfile
     }
+    // Read-only access to a session. A connection may read sessions from any profile the
+    // user can access: the UI switches between profiles without always reconnecting (see
+    // #1884), so pinning every read to the handshake profile made `resume` fail and left
+    // the conversation permanently blank. Mutating operations keep the stricter
+    // connection-scoped check above (see the attachment provenance boundary in `run`).
+    const requireSocketSessionReadAccess = (sessionId: string) => {
+      const session = getSession(sessionId)
+      if (!session) throw new Error('Session not found')
+      const sessionProfile = String(session.profile || 'default').trim() || 'default'
+      if (!profileExists(sessionProfile)) {
+        throw new Error(`Profile "${sessionProfile}" does not exist`)
+      }
+      if (socketUser && !this.canAccessProfile(socketUser, sessionProfile)) {
+        throw new Error(`Profile "${sessionProfile}" is not available for this user`)
+      }
+      return sessionProfile
+    }
 
     socket.on('run', async (data: {
       push_snapshot?: unknown
@@ -1122,7 +1157,7 @@ export class ChatRunSocket {
       if (!data.session_id) return
       const sid = data.session_id
       try {
-        requireSocketSessionAccess(sid)
+        requireSocketSessionReadAccess(sid)
       } catch (err) {
         socket.emit('run.failed', {
           event: 'run.failed',
@@ -1139,7 +1174,7 @@ export class ChatRunSocket {
       if (!data.session_id || typeof data.id !== 'string' || data.id.length > 128) return
       const sid = data.session_id
       try {
-        requireSocketSessionAccess(sid)
+        requireSocketSessionReadAccess(sid)
       } catch (err) {
         socket.emit('run.failed', {
           event: 'run.failed',
@@ -2808,6 +2843,8 @@ export class ChatRunSocket {
           .catch((err: unknown) => logger.warn(err, '[chat-run-socket] failed to interrupt bridge run while clearing session %s', sessionId))
       }
       state.messages = []
+      state.finalizeRunUsage = undefined
+      state.nativeUsageSource = undefined
       state.messageTotal = 0
       state.messageLoadedCount = 0
       state.messageStateBaselineCount = 0
@@ -3118,6 +3155,7 @@ export class ChatRunSocket {
   async close() {
     if (this.closing) return
     this.closing = true
+    this.stopUsageUpdates()
     for (const sessionId of this.sessionMap.keys()) this.finishTaskPlanRun(sessionId, 'abort.completed')
     if (this.backgroundPollTimer) {
       clearInterval(this.backgroundPollTimer)
