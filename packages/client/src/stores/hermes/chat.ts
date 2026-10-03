@@ -1,3 +1,5 @@
+import { historySessionSource, isBuiltinEkkoSession } from '@/utils/hermes/session-agent'
+import { isKnownEkkoSessionCommand } from '@/utils/hermes/bridge-session-commands'
 import { normalizeRunUsage, type RunUsageSummary } from '@/utils/run-usage'
 import { mergeTaskPlanMessages, type TaskPlanSnapshot } from '@/utils/task-plan'
 import { startRunViaSocket, resumeSession, registerSessionHandlers, unregisterSessionHandlers, getChatRunSocket, respondToolApproval, onPeerUserMessage, onSessionCommand, onSessionTitleUpdated, onSessionWorkspaceUpdated, onSessionSettingsUpdated, onRunUsageUpdated, respondClarify, type ChatRunTransport, type RunEvent, type ResumeSessionPayload, type StartRunRequest, type ContentBlock as ContentBlockImport } from '@/api/studio/chat'
@@ -31,7 +33,7 @@ export type ContentBlock = ContentBlockImport
 export const LIVE_CHAT_MESSAGE_PAGE_SIZE = 150
 export const LIVE_CHAT_MAX_LOADED_MESSAGES = 300
 const LEGACY_WORKSPACE_RUN_CHANGE_MESSAGE_PREFIX = 'workspace-run-change:'
-type ChatAgentId = 'hermes' | 'claude' | 'codex' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor' | 'ekko-agent'
+type ChatAgentId = 'hermes' | 'claude' | 'codex' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor' | 'antigravity' | 'ekko-agent'
 
 function agentToCodingAgentId(agent?: string): ChatCodingAgentId | undefined {
   if (agent === 'codex') return 'codex'
@@ -39,9 +41,10 @@ function agentToCodingAgentId(agent?: string): ChatCodingAgentId | undefined {
   if (agent === 'grok') return 'grok'
   if (agent === 'dsh') return 'dsh'
   if (agent === 'opencode') return 'opencode'
+  if (agent === 'antigravity') return 'antigravity'
   if (agent === 'cursor') return 'cursor'
   if (agent === 'claude') return 'claude-code'
-  if (agent === 'ekko-agent') return 'ekko-agent'
+  if (['ekko', 'ekko_agent', 'ekko-agent'].includes(agent || '')) return 'ekko-agent'
   return undefined
 }
 
@@ -51,6 +54,7 @@ function codingAgentIdToAgent(id?: ChatCodingAgentId): ChatAgentId | undefined {
   if (id === 'grok') return 'grok'
   if (id === 'dsh') return 'dsh'
   if (id === 'opencode') return 'opencode'
+  if (id === 'antigravity') return 'antigravity'
   if (id === 'cursor') return 'cursor'
   if (id === 'claude-code') return 'claude'
   if (id === 'ekko-agent') return 'ekko-agent'
@@ -447,7 +451,7 @@ export interface QueueInsertionState {
   generation: string
   runId?: string
   queueId: string
-  runtime: 'hermes' | 'ekko' | 'claude-code' | 'codex' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor'
+  runtime: 'hermes' | 'ekko' | 'claude-code' | 'codex' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor' | 'antigravity'
   phase: 'requesting' | 'waiting_for_tool_batch' | 'stopping_current_turn'
   guarantee: 'strict' | 'immediate'
   requestedAt: number
@@ -1169,7 +1173,7 @@ function applySessionTokenUsage(session: Session, usage: {
 function mapHermesSession(s: SessionSummary): Session {
   const codingAgentId = agentToCodingAgentId(s.agent)
   const isCodingAgentSession = s.source === 'coding_agent' || Boolean(codingAgentId)
-  const codingAgentMode = isCodingAgentSession
+  const codingAgentMode = isBuiltinEkkoSession(s) ? 'scoped' : isCodingAgentSession
     ? (s.agent_mode === 'global' || s.agent_mode === 'scoped'
         ? s.agent_mode
         : s.provider === 'global' ? 'global' : 'scoped')
@@ -1179,7 +1183,7 @@ function mapHermesSession(s: SessionSummary): Session {
     id: s.id,
     profile: s.profile || 'default',
     title: s.title || '',
-    source: s.source || undefined,
+    source: historySessionSource(s) || undefined,
     agent: s.agent || undefined,
     agentSessionId: s.agent_session_id || undefined,
     agentNativeSessionId: s.agent_native_session_id || undefined,
@@ -1240,20 +1244,20 @@ function runtimeStoragePrefix(): string {
 function storageKey(): string { return runtimeStoragePrefix() + getProfileName() }
 function legacyStorageKey(): string | null { return activeRuntimeMode === 'default' && getProfileName() === 'default' ? LEGACY_STORAGE_KEY : null }
 
-function isCodingAgentLikeSession(session?: Pick<Session, 'source' | 'agent' | 'codingAgentId'> | null): boolean {
-  return session?.source === 'coding_agent' ||
+function isProviderAgentSession(session?: Pick<Session, 'source' | 'agent' | 'codingAgentId'> | null): boolean {
+  return session?.source === 'builtin_agent' || session?.source === 'coding_agent' ||
     Boolean(session?.codingAgentId) ||
     Boolean(agentToCodingAgentId(session?.agent))
 }
 
 function clearCodingAgentRuntimeCredentials(session?: Session | null) {
-  if (!session || !isCodingAgentLikeSession(session)) return
+  if (!session || !isProviderAgentSession(session)) return
   session.baseUrl = undefined
   session.apiKey = undefined
 }
 
 function shouldPreserveRuntimeApiMode(session?: Session | null): boolean {
-  return isCodingAgentLikeSession(session) && session?.codingAgentMode !== 'global'
+  return isProviderAgentSession(session) && session?.codingAgentMode !== 'global'
 }
 
 function isQuotaExceededError(error: unknown): boolean {
@@ -1990,7 +1994,7 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow' | 'group_chat'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'builtin_agent' | 'global_agent' | 'workflow' | 'group_chat'
     agent?: ChatAgentId
     codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
@@ -2001,9 +2005,9 @@ export const useChatStore = defineStore('chat', () => {
     apiKey?: string
     apiMode?: ProviderApiMode
   } = {}): Session {
-    const source = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
     const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
-    const codingAgentMode = codingAgentId ? (options.codingAgentMode || 'scoped') : undefined
+    const source = historySessionSource({ ...options, codingAgentId, source: runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli' })
+    const codingAgentMode = codingAgentId ? (codingAgentId === 'ekko-agent' ? 'scoped' : options.codingAgentMode || 'scoped') : undefined
     const session: Session = {
       id: uid(),
       profile: options.profile || useProfilesStore().activeProfileName || 'default',
@@ -2302,7 +2306,7 @@ export const useChatStore = defineStore('chat', () => {
     profile?: string
     model?: string
     provider?: string
-    source?: 'api_server' | 'cli' | 'coding_agent' | 'global_agent' | 'workflow' | 'group_chat'
+    source?: 'api_server' | 'cli' | 'coding_agent' | 'builtin_agent' | 'global_agent' | 'workflow' | 'group_chat'
     agent?: ChatAgentId
     codingAgentId?: ChatCodingAgentId
     codingAgentMode?: 'global' | 'scoped'
@@ -2316,7 +2320,7 @@ export const useChatStore = defineStore('chat', () => {
     const appStore = useAppStore()
     const storageSource = runtimeMode.value === 'global_agent' ? 'global_agent' : options.source || 'cli'
     const codingAgentId = options.codingAgentId || agentToCodingAgentId(options.agent)
-    const isGlobalCodingAgent = Boolean(codingAgentId) && options.codingAgentMode === 'global'
+    const isGlobalCodingAgent = Boolean(codingAgentId) && codingAgentId !== 'ekko-agent' && options.codingAgentMode === 'global'
     const session = createSession({
       profile: options.profile,
       model: isGlobalCodingAgent ? undefined : options.model || appStore.selectedModel || undefined,
@@ -2342,11 +2346,11 @@ export const useChatStore = defineStore('chat', () => {
     const target = sessions.value.find(s => s.id === targetId)
     const activeTarget = activeSession.value?.id === targetId ? activeSession.value : null
     const session = target || activeTarget
-    if (session?.codingAgentMode === 'global' && isCodingAgentLikeSession(session)) return false
+    if (session?.codingAgentMode === 'global' && isProviderAgentSession(session)) return false
     const previousProvider = String(target?.provider ?? activeTarget?.provider ?? '')
     const nextProvider = provider || ''
     const shouldClearRuntimeCredentials = previousProvider !== nextProvider && (
-      isCodingAgentLikeSession(target) || isCodingAgentLikeSession(activeTarget)
+      isProviderAgentSession(target) || isProviderAgentSession(activeTarget)
     )
     const preservedApiMode = apiMode || (previousProvider === nextProvider
       ? (shouldPreserveRuntimeApiMode(target) ? target?.apiMode : undefined) ||
@@ -3165,7 +3169,7 @@ export const useChatStore = defineStore('chat', () => {
         || raw.runtime === 'grok'
         || raw.runtime === 'opencode'
         || raw.runtime === 'dsh'
-        || raw.runtime === 'cursor'
+        || (raw.runtime === 'cursor' || raw.runtime === 'antigravity')
         ? raw.runtime
         : 'hermes',
       phase,
@@ -3593,6 +3597,7 @@ export const useChatStore = defineStore('chat', () => {
     if (codingAgentId === 'opencode') {
       return { icon: '/coding-agents/opencode.png' }
     }
+    if (codingAgentId === 'antigravity') return { icon: '/coding-agents/antigravity.png' }
     if (codingAgentId === 'cursor') {
       return { icon: '/coding-agents/cursor-logo.png' }
     }
@@ -3644,8 +3649,10 @@ export const useChatStore = defineStore('chat', () => {
     const shouldSendInitialSessionConfig = activeSession.value
       ? activeSession.value.messageCount == null || activeSession.value.messageCount === 0
       : false
-    const isCodingAgentSession = isCodingAgentLikeSession(activeSession.value)
-    const isBridgeSlashCommand = !isCodingAgentSession && isKnownBridgeSessionCommand(trimmedContent)
+    const isProviderAgent = isProviderAgentSession(activeSession.value)
+    const isBuiltinSlashCommand = !attachments?.length && isBuiltinEkkoSession(activeSession.value) && isKnownEkkoSessionCommand(trimmedContent)
+    const isBridgeSlashCommand = !isProviderAgent && isKnownBridgeSessionCommand(trimmedContent)
+    const isSessionSlashCommand = isBridgeSlashCommand || isBuiltinSlashCommand
     const isBridgeCompressCommand = isBridgeSlashCommand && /^\/compress(?:\s|$)/i.test(trimmedContent)
     const isBridgePlanCommand = isBridgeSlashCommand && /^\/plan(?:\s|$)/i.test(trimmedContent)
     const isBridgeSkillCommand = isBridgeSlashCommand && /^\/skill(?:\s|$)/i.test(trimmedContent)
@@ -3653,36 +3660,36 @@ export const useChatStore = defineStore('chat', () => {
     const isBridgeMoaCommand = isBridgeSlashCommand && /^\/moa(?:\s|$)/i.test(trimmedContent)
     const isBridgeGoalCommand = isBridgeSlashCommand && /^\/goal(?:\s|$)/i.test(trimmedContent)
     const isBridgeForkCommand = isBridgeSlashCommand && /^\/fork(?:\s|$)/i.test(trimmedContent)
-    const messageReference = isBridgeSlashCommand ? null : messageReferences.value.get(sid) || null
+    const messageReference = isSessionSlashCommand ? null : messageReferences.value.get(sid) || null
     const submittedContent = messageReference
       ? formatMessageWithReference(messageReference, trimmedContent)
       : trimmedContent
-    const shouldOptimisticallyShowRunStatus = !isCodingAgentSession && !isBridgeForkCommand
+    const shouldOptimisticallyShowRunStatus = !isProviderAgent && !isBridgeForkCommand
     const wasLiveBeforeSend = isSessionLive(sid)
     if (isBridgeForkCommand) {
       if (pendingForkCommands.value.has(sid)) return
       pendingForkCommands.value = new Set(pendingForkCommands.value).add(sid)
     }
     const shouldQueue = wasLiveBeforeSend && (
-      !isBridgeSlashCommand ||
+      (!isBridgeSlashCommand && !isBuiltinSlashCommand) ||
       isBridgePlanCommand ||
       isBridgeSkillCommand ||
       isBridgeBundleCommand ||
       isBridgeMoaCommand
     )
-    if (isBridgeSlashCommand && !shouldQueue && !wasLiveBeforeSend) {
+    if (isSessionSlashCommand && !shouldQueue && !wasLiveBeforeSend) {
       settleRuntimeDisplayForCommand(sid)
     }
 
     const visibleAttachments = attachments?.filter(attachment => !attachment.videoFrameFor)
     const userMsg: Message = {
       id: uid(),
-      role: isBridgeSlashCommand ? 'command' : 'user',
+      role: isSessionSlashCommand ? 'command' : 'user',
       content: submittedContent,
       timestamp: Date.now(),
       attachments: visibleAttachments && visibleAttachments.length > 0 ? visibleAttachments : undefined,
       queued: shouldQueue,
-      systemType: isBridgeSlashCommand ? 'command' : undefined,
+      systemType: isSessionSlashCommand ? 'command' : undefined,
     }
 
     if (shouldQueue) {
@@ -3757,17 +3764,22 @@ export const useChatStore = defineStore('chat', () => {
         ? 'global_agent'
         : storedSource === 'workflow'
           ? 'workflow'
-        : isCodingAgentSession
+        : storedSource === 'group_chat'
+          ? 'group_chat'
+        : isBuiltinEkkoSession(activeSession.value)
+          ? 'builtin_agent'
+        : isProviderAgent
           ? 'coding_agent'
           : storedSource === 'api_server'
             ? 'api_server'
             : 'cli'
-      const isCodingAgentExecution = sessionSource === 'coding_agent' || (sessionSource === 'workflow' && isCodingAgentSession)
+      const isCodingAgentExecution = sessionSource === 'builtin_agent' || sessionSource === 'coding_agent'
+        || ((sessionSource === 'workflow' || sessionSource === 'group_chat' || sessionSource === 'global_agent') && isProviderAgent)
       const codingAgentId: ChatCodingAgentId =
-        activeSession.value?.codingAgentId ||
+        (isBuiltinEkkoSession(activeSession.value) ? 'ekko-agent' : activeSession.value?.codingAgentId) ||
         agentToCodingAgentId(activeSession.value?.agent) ||
         'claude-code'
-      const codingAgentMode = activeSession.value?.codingAgentMode || 'scoped'
+      const codingAgentMode = codingAgentId === 'ekko-agent' ? 'scoped' : activeSession.value?.codingAgentMode || 'scoped'
       const codingAgentApiMode = isCodingAgentExecution && codingAgentMode !== 'global'
         ? normalizeCodingAgentApiMode(
             activeSession.value?.apiMode || providerGroup?.api_mode,
@@ -3800,7 +3812,7 @@ export const useChatStore = defineStore('chat', () => {
         ...(sessionSource === 'workflow' ? { session_source: 'workflow' as const } : {}),
         ...(isCodingAgentExecution
           ? {
-              coding_agent_id: codingAgentId,
+              ...(codingAgentId === 'ekko-agent' ? { agent_id: 'ekko-agent' as const } : { coding_agent_id: codingAgentId }),
               agent_preset: activeSession.value?.agentPreset,
               mode: codingAgentMode,
               baseUrl: codingAgentMode === 'global' ? undefined : activeSession.value?.baseUrl || providerGroup?.base_url || undefined,
@@ -4566,10 +4578,10 @@ export const useChatStore = defineStore('chat', () => {
       )
       runSubmitted = true
 
-      if (isCodingAgentSession) {
+      if (isProviderAgent && !isBuiltinSlashCommand) {
         serverWorking.value.add(sid)
         streamStates.value.set(sid, ctrl)
-      } else if (!isBridgeSlashCommand || isBridgeCompressCommand || isBridgePlanCommand || isBridgeGoalCommand) {
+      } else if (!isSessionSlashCommand || isBridgeCompressCommand || isBridgePlanCommand || isBridgeGoalCommand) {
         streamStates.value.set(sid, ctrl)
       }
     } catch (err: any) {
