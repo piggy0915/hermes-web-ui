@@ -48,6 +48,7 @@ ENV NODE_ENV=production
 ENV HOME=/home/agent
 ENV HERMES_HOME=/home/agent/.hermes
 ENV HERMES_WEB_UI_MANAGED_GATEWAY=1
+ENV STUDIO_P2P_UDP_PORT_RANGE=50000-50127
 # Keep runtime-installed coding agent CLIs in the existing Studio data volume.
 ENV NPM_CONFIG_PREFIX=/home/agent/.hermes-web-ui/coding-agent/npm
 ENV PATH=/home/agent/.hermes-web-ui/coding-agent/npm/bin:/opt/hermes/.venv/bin:$PATH
@@ -57,6 +58,7 @@ ENV PATH=/home/agent/.hermes-web-ui/coding-agent/npm/bin:/opt/hermes/.venv/bin:$
 RUN sed -i 's/\r$//' /app/bin/start-studio-all.sh && chmod +x /app/bin/start-studio-all.sh
 
 EXPOSE 6060
+EXPOSE 50000-50127/udp
 
 ENTRYPOINT ["sh", "-c", "sed -i 's/\\r$//' /app/bin/*.sh 2>/dev/null; chmod +x /app/bin/*.sh 2>/dev/null; exec /app/bin/start-studio-all.sh"]
 CMD []
