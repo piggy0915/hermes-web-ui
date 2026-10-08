@@ -819,7 +819,17 @@ const headerTitle = computed(() =>
 );
 
 const showNewChatModal = ref(false);
-const newChatAgent = ref<"hermes" | ChatCodingAgentId>("ekko-agent");
+const NEW_CHAT_AGENT_STORAGE_KEY = "hermes_new_chat_agent_v1";
+function loadNewChatAgent(): "hermes" | ChatCodingAgentId {
+  try {
+    const saved = localStorage.getItem(NEW_CHAT_AGENT_STORAGE_KEY);
+    return AGENT_OPTIONS.find(option => option.value === saved)?.value || AGENT_OPTIONS[0].value;
+  } catch {
+    return AGENT_OPTIONS[0].value;
+  }
+}
+let preferredNewChatAgent = loadNewChatAgent();
+const newChatAgent = ref<"hermes" | ChatCodingAgentId>(preferredNewChatAgent);
 const newChatAgentMode = ref<"global" | "scoped">("scoped");
 const newChatProfile = ref<string>("default");
 const newChatProvider = ref<string>("");
@@ -887,30 +897,17 @@ async function handleNewChatCategoryChange(value: string | number | null) {
   }
 }
 
-// Default workspace feature (multiple defaults supported)
-const defaultWorkspaces = ref<string[]>([]);
-const recentWorkspaces = ref<Array<{ path: string; lastUsed: number; useCount: number }>>([]);
-let workspaceComposable: ReturnType<typeof useDefaultWorkspace> | null = null;
+// Directory shortcuts are stored by the authenticated Studio account.
+const workspaceComposable = useDefaultWorkspace();
+const { defaultWorkspaces, recentWorkspaces } = workspaceComposable;
 
-function initWorkspaceComposable(profile: string) {
-  workspaceComposable = useDefaultWorkspace(profile);
-  defaultWorkspaces.value = workspaceComposable.loadDefaultWorkspaces();
-  recentWorkspaces.value = workspaceComposable.loadRecentWorkspaces();
+async function initWorkspaceComposable() {
+  try { await workspaceComposable.init(); }
+  catch { message.error(t("chat.workspaceSetFailed")); }
 }
 
-function handleToggleDefaultWorkspace() {
-  if (!workspaceComposable) return;
-  const currentPath = newChatWorkspace.value;
-  if (!currentPath) return;
-  
-  const isDefault = defaultWorkspaces.value.includes(currentPath);
-  if (isDefault) {
-    workspaceComposable.removeDefaultWorkspace(currentPath);
-    defaultWorkspaces.value = defaultWorkspaces.value.filter(p => p !== currentPath);
-  } else {
-    workspaceComposable.addDefaultWorkspace(currentPath);
-    defaultWorkspaces.value = [...defaultWorkspaces.value, currentPath];
-  }
+async function handleToggleDefaultWorkspace() {
+  if (newChatWorkspace.value) await handleTogglePinRecent(newChatWorkspace.value);
 }
 
 function handleSelectRecentWorkspace(path: string) {
@@ -922,20 +919,14 @@ function handleSelectDefaultWorkspace(path: string) {
   showDefaultWorkspaceMenu.value = false;
 }
 
-function handleTogglePinRecent(path: string) {
-  if (!workspaceComposable) return;
-  const isDefault = defaultWorkspaces.value.includes(path);
-  if (isDefault) {
-    workspaceComposable.removeDefaultWorkspace(path);
-    defaultWorkspaces.value = defaultWorkspaces.value.filter(p => p !== path);
-  } else {
-    workspaceComposable.addDefaultWorkspace(path);
-    defaultWorkspaces.value = [...defaultWorkspaces.value, path];
-  }
+async function handleTogglePinRecent(path: string) {
+  try {
+    await workspaceComposable.toggleDefaultWorkspace(path);
+  } catch { message.error(t("chat.workspaceSetFailed")); }
 }
 
 const isCurrentWorkspaceDefault = computed(() => {
-  return Boolean(newChatWorkspace.value && defaultWorkspaces.value.includes(newChatWorkspace.value));
+  return Boolean(newChatWorkspace.value && workspaceComposable.isDefaultWorkspace(newChatWorkspace.value));
 });
 
 const showDefaultWorkspaceMenu = ref(false);
@@ -1201,15 +1192,22 @@ watch(
   () => [newChatAgent.value, newChatAgentMode.value, newChatProfile.value],
   () => {
     ensureNewChatProviderSelection();
-    // Reload workspace data when profile changes
-    if (newChatProfile.value) {
-      initWorkspaceComposable(newChatProfile.value);
-    }
   },
 );
 
 function isCurrentNewChatOptionsLoad(sequence: number) {
   return showNewChatModal.value && sequence === newChatOptionsLoadSequence;
+}
+
+function handleNewChatAgentChange(value: "hermes" | ChatCodingAgentId) {
+  if (!newChatAgentOptions.value.some(option => option.value === value)) return;
+  preferredNewChatAgent = value;
+  newChatAgent.value = value;
+  try {
+    localStorage.setItem(NEW_CHAT_AGENT_STORAGE_KEY, value);
+  } catch {
+    // Keep the selection in memory when local storage is unavailable.
+  }
 }
 
 async function refreshNewChatAgentAvailability(sequence: number) {
@@ -1218,9 +1216,8 @@ async function refreshNewChatAgentAvailability(sequence: number) {
     const availability = await fetchAgentAvailabilitySnapshot();
     if (!isCurrentNewChatOptionsLoad(sequence)) return;
     newChatAgentAvailability.value = availability;
-    if (!newChatAgentOptions.value.some(option => option.value === newChatAgent.value)) {
-      newChatAgent.value = newChatAgentOptions.value[0]?.value || "ekko-agent";
-    }
+    newChatAgent.value = newChatAgentOptions.value.find(option => option.value === preferredNewChatAgent)?.value
+      || newChatAgentOptions.value[0]?.value || AGENT_OPTIONS[0].value;
   } catch {
     if (isCurrentNewChatOptionsLoad(sequence) && !newChatAgentAvailability.value) {
       message.error(t("codingAgents.loadFailed"));
@@ -1266,8 +1263,12 @@ function openNewChatModal() {
     profilesStore.profiles.find((profile) => profile.active)?.name ||
     profilesStore.profiles[0]?.name ||
     "default";
-  initWorkspaceComposable(newChatProfile.value);
-  newChatWorkspace.value = mostRecentDefaultWorkspace.value || "";
+  newChatWorkspace.value = "";
+  void initWorkspaceComposable().then(() => {
+    if (isCurrentNewChatOptionsLoad(sequence) && !newChatWorkspace.value) {
+      newChatWorkspace.value = mostRecentDefaultWorkspace.value || "";
+    }
+  });
   syncNewChatModelSelection();
 
   void refreshNewChatAgentAvailability(sequence);
@@ -1368,9 +1369,9 @@ async function confirmNewChat() {
     apiMode: isNewChatCodingAgent.value && !isGlobalCodingAgent ? newChatApiMode.value : undefined,
   });
   // Record workspace to recent list
-  if (newChatWorkspace.value && workspaceComposable) {
-    workspaceComposable.recordWorkspaceUsage(newChatWorkspace.value);
-    recentWorkspaces.value = workspaceComposable.loadRecentWorkspaces();
+  if (newChatWorkspace.value) {
+    try { await workspaceComposable.recordWorkspaceUsage(newChatWorkspace.value); }
+    catch { message.error(t("chat.workspaceSetFailed")); }
   }
   
   await router.push({
@@ -2921,7 +2922,8 @@ async function handleSessionModelCustomSubmit() {
           <label class="new-chat-field">
             <span class="new-chat-label">{{ t("chat.agent") }}</span>
             <NSelect
-              v-model:value="newChatAgent"
+              :value="newChatAgent"
+              @update:value="handleNewChatAgentChange"
               :options="newChatAgentOptions"
                 :virtual-scroll="false"
               :loading="newChatAgentLoading"
