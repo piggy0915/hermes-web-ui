@@ -20462,10 +20462,13 @@
             "description": "Success"
           },
           "400": {
-            "$ref": "#/components/responses/BadRequest"
+            "description": "Invalid effort, mode or native variant/family"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "503": {
+            "description": "Native catalog unavailable for validating the paired model change"
           }
         },
         "parameters": [
@@ -20484,8 +20487,28 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {},
-                "additionalProperties": true
+                "required": [
+                  "reasoningEffort"
+                ],
+                "properties": {
+                  "reasoningEffort": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "none",
+                      "minimal",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Optional literal effort-variant ID for global Cursor/Antigravity sessions. Validated against the native catalog and current family; persisted atomically with effort."
+                  }
+                }
               }
             }
           }
@@ -23442,7 +23465,7 @@
           "Sessions"
         ],
         "summary": "Get stats",
-        "description": "GET /api/studio/usage/stats",
+        "description": "Aggregates all recorded usage across accessible Profiles by default. Account means the Studio user who owns the session, not a provider account. Account options include newly created sessions before their first usage event. Legacy rows use confirmed Studio ownership; unknown ownership remains unassigned.",
         "operationId": "usageStats",
         "security": [
           {
@@ -23453,8 +23476,14 @@
           "200": {
             "description": "Success"
           },
+          "400": {
+            "description": "Invalid account ID or timezone"
+          },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Selected Profile is not accessible to this user"
           },
           "404": {
             "description": "Not found"
@@ -23462,11 +23491,64 @@
         },
         "parameters": [
           {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(?:[1-9][0-9]*|unassigned)$"
+            },
+            "description": "Studio user ID, or unassigned. Omit to include all accounts."
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "days",
             "in": "query",
             "required": false,
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "today"
+              ]
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "time_zone",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ]
@@ -25695,6 +25777,10 @@
                                 "provider": {
                                   "type": "string"
                                 },
+                                "resolvedModel": {
+                                  "type": "string",
+                                  "description": "Concrete identity from native discovery; execution preserves id."
+                                },
                                 "isDefault": {
                                   "type": "boolean"
                                 },
@@ -25712,6 +25798,17 @@
                                   "items": {
                                     "type": "string"
                                   }
+                                },
+                                "modelFamily": {
+                                  "type": "string",
+                                  "description": "Grouping key for native effort variants; never send it as a model ID."
+                                },
+                                "modelFamilyName": {
+                                  "type": "string"
+                                },
+                                "reasoningEffort": {
+                                  "type": "string",
+                                  "description": "Fixed effort encoded by this literal native model ID."
                                 },
                                 "inputModalities": {
                                   "type": "array",

@@ -1520,11 +1520,26 @@ const nativeModelSchema = {
   type: 'object', required: ['id', 'name'], properties: {
     id: { type: 'string', description: 'Native model ID or alias; preserve provider prefixes.' },
     name: { type: 'string' }, provider: { type: 'string' },
+    resolvedModel: { type: 'string', description: 'Concrete identity from native discovery; execution preserves id.' },
     isDefault: { type: 'boolean' }, hidden: { type: 'boolean' },
     contextWindow: { type: 'number' }, maxOutputTokens: { type: 'number' },
     reasoningEfforts: { type: 'array', items: { type: 'string' } },
+    modelFamily: { type: 'string', description: 'Grouping key for native effort variants; never send it as a model ID.' },
+    modelFamilyName: { type: 'string' },
+    reasoningEffort: { type: 'string', description: 'Fixed effort encoded by this literal native model ID.' },
     inputModalities: { type: 'array', items: { type: 'string' } },
   },
+}
+const reasoningOperation = openapi.paths['/api/studio/sessions/{id}/reasoning-effort']?.post
+if (reasoningOperation) {
+  reasoningOperation.requestBody = { required: true, content: { 'application/json': { schema: {
+    type: 'object', required: ['reasoningEffort'], properties: {
+      reasoningEffort: { type: 'string', enum: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      model: { type: 'string', description: 'Optional literal effort-variant ID for global Cursor/Antigravity sessions. Validated against the native catalog and current family; persisted atomically with effort.' },
+    },
+  } } } }
+  reasoningOperation.responses['400'] = { description: 'Invalid effort, mode or native variant/family' }
+  reasoningOperation.responses['503'] = { description: 'Native catalog unavailable for validating the paired model change' }
 }
 openapi.paths['/api/coding-agents/models'] = { get: {
   tags: ['Coding Agents'], operationId: 'getCodingAgentModels', summary: 'Discover native models for one or all Coding Agents',
@@ -1551,6 +1566,16 @@ openapi.paths['/api/coding-agents/models'] = { get: {
     '500': { description: 'Unable to initialize native model discovery' },
   },
 } }
+
+const usageStatsOperation = openapi.paths['/api/studio/usage/stats']?.get
+if (usageStatsOperation) {
+  usageStatsOperation.description = 'Aggregates all recorded usage across accessible Profiles by default. Account means the Studio user who owns the session, not a provider account. Account options include newly created sessions before their first usage event. Legacy rows use confirmed Studio ownership; unknown ownership remains unassigned.'
+  const accountParameter = usageStatsOperation.parameters.find(parameter => parameter.name === 'account')
+  accountParameter.schema = { type: 'string', pattern: '^(?:[1-9][0-9]*|unassigned)$' }
+  accountParameter.description = 'Studio user ID, or unassigned. Omit to include all accounts.'
+  usageStatsOperation.responses['400'] = { description: 'Invalid account ID or timezone' }
+  usageStatsOperation.responses['403'] = { description: 'Selected Profile is not accessible to this user' }
+}
 
 // Write output
 const outputPath = join(rootDir, 'docs/openapi.json')

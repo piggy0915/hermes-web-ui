@@ -71,12 +71,16 @@ export interface CodingAgentsStatus {
 export interface CodingAgentModel {
   id: string
   name: string
+  resolvedModel?: string
   provider?: string
   isDefault?: boolean
   hidden?: boolean
   contextWindow?: number
   maxOutputTokens?: number
   reasoningEfforts?: string[]
+  modelFamily?: string
+  modelFamilyName?: string
+  reasoningEffort?: string
   inputModalities?: string[]
 }
 

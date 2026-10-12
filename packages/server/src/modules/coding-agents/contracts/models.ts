@@ -8,12 +8,18 @@ export type CodingAgentModelScope = 'available' | 'configured' | 'builtin'
 export interface CodingAgentModel {
   id: string
   name: string
+  /** Concrete identity advertised by the native CLI; execution still uses id. */
+  resolvedModel?: string
   provider?: string
   isDefault?: boolean
   hidden?: boolean
   contextWindow?: number
   maxOutputTokens?: number
   reasoningEfforts?: string[]
+  /** Family metadata never replaces the literal native id. */
+  modelFamily?: string
+  modelFamilyName?: string
+  reasoningEffort?: string
   inputModalities?: string[]
 }
 
