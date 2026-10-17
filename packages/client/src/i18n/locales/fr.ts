@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "Approbation des outils",
     "approvalTimeoutMs": "Délai d’approbation (ms)",
     "permanentAllow": "Outils toujours autorisés",
+    "computerUseEnabled": "Contrôle de l’ordinateur",
+    "computerUseHint": "Autoriser Ekko à observer et utiliser les applications de cet ordinateur. Les saisies suivent vos autorisations d’outils.",
+    "computerUseTimeoutMs": "Délai des opérations de bureau (ms)",
     "codeExecEnabled": "Exécution de code",
     "codeExecLanguages": "Langages d’exécution",
     "codeExecTimeoutMs": "Délai d’exécution du code (ms)",
@@ -512,6 +515,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Redimensionner la barre latérale',
     desktopUpdatePreparing: "Préparation de la mise à jour",
     desktopUpdateStopping: "Arrêt du téléchargement…",
     desktopUpdateReady: "Mise à jour prête",
@@ -1012,6 +1016,18 @@ export default {
 
   // Chat
   chat: {
+    selectMessages: "Sélectionner des messages",
+    messagesSelected: "{count} sélectionnés",
+    deleteSelectedMessages: "Supprimer la sélection",
+    deleteMessagesConfirm: "Supprimer définitivement les {count} éléments sélectionnés ? Chaque exécution inclut les réponses, réflexions et traces des outils de toutes les pages. Les contenus supprimés seront exclus du contexte des prochaines conversations.",
+    messageSelectionHint: "Sélectionnez les messages utilisateur individuellement ou une exécution entière de l’agent. Les messages compressés ne peuvent pas être sélectionnés.",
+    messageAlreadyCompressed: "Déjà compressé ; suppression impossible",
+    messageCompressionBoundaryUnknown: "Limite de compression inconnue ; suppression désactivée",
+    selectAgentRun: "Exécution de l’agent",
+    selectSingleMessage: "Message",
+    messageSelectionFailed: "Impossible de charger la sélection",
+    messageDeleteFailed: "Impossible de supprimer les messages",
+    messagesDeleted: "{count} éléments supprimés",
     screenshot: {
       shortcut: {
         settings: "Définir le raccourci de capture",
@@ -3198,6 +3214,9 @@ jobTriggered: 'Job declenche',
 
   // Journal des modifications
   groupChat: {
+    messageAlreadySummarized: "Déjà résumé ; suppression impossible",
+    messageSummaryBoundaryUnknown: "Limite du résumé indisponible ; suppression désactivée",
+    messageSelectionHint: "Sélectionnez des messages de membres ou des exécutions complètes. Les messages résumés ne peuvent pas être sélectionnés.",
     routingHandoffIncomplete: 'Les informations de transfert peuvent être incomplètes.',
     routingLoopDetected: 'Une boucle de collaboration répétitive est possible.',
     routingSuggested: 'JEV suggère {agent}',

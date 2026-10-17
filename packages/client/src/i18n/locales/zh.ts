@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "工具审批",
     "approvalTimeoutMs": "审批超时（毫秒）",
     "permanentAllow": "永久允许的工具",
+    "computerUseEnabled": "电脑操作",
+    "computerUseHint": "允许 Ekko 查看和操作运行它的这台电脑上的应用。输入操作遵循工具审批设置。",
+    "computerUseTimeoutMs": "桌面操作超时（毫秒）",
     "codeExecEnabled": "代码执行",
     "codeExecLanguages": "代码执行语言",
     "codeExecTimeoutMs": "代码执行超时（毫秒）",
@@ -500,6 +503,7 @@ export default {
   },
 
   sidebar: {
+    resize: '调整侧边栏宽度',
     desktopUpdatePreparing: "正在准备更新",
     desktopUpdateStopping: "正在停止下载…",
     desktopUpdateReady: "更新已就绪",
@@ -1033,6 +1037,18 @@ export default {
 
   // 对话
   chat: {
+    selectMessages: "多选消息",
+    messagesSelected: "已选 {count} 条",
+    deleteSelectedMessages: "删除所选",
+    deleteMessagesConfirm: "确定永久删除所选的 {count} 条吗？每轮 agent 会连同所有分页中的回复、思考和工具记录一起删除，后续对话上下文将排除这些内容。",
+    messageSelectionHint: "用户消息单独选择，agent 每轮 run 算一条；已压缩的消息不可选择。",
+    messageAlreadyCompressed: "已压缩，不能删除",
+    messageCompressionBoundaryUnknown: "压缩边界无法确认，暂不能删除",
+    selectAgentRun: "一轮 agent 回复",
+    selectSingleMessage: "单条消息",
+    messageSelectionFailed: "加载可选消息失败",
+    messageDeleteFailed: "删除消息失败",
+    messagesDeleted: "已删除 {count} 条",
     screenshot: {
       shortcut: {
         settings: "设置截图快捷键",
@@ -3486,6 +3502,9 @@ export default {
 
   // 群聊
   groupChat: {
+    messageAlreadySummarized: "已被总结，无法删除",
+    messageSummaryBoundaryUnknown: "无法确定总结边界，暂不可删除",
+    messageSelectionHint: "可选择成员消息或整次 Agent 回复；已总结的消息不可选择。",
     routingHandoffIncomplete: '交接信息可能不完整。',
     routingLoopDetected: '检测到协作可能在重复空转。',
     routingSuggested: 'JEV 建议交给 {agent}',

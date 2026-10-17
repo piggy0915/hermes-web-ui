@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "ツール承認",
     "approvalTimeoutMs": "承認タイムアウト（ms）",
     "permanentAllow": "常に許可するツール",
+    "computerUseEnabled": "コンピューター操作",
+    "computerUseHint": "Ekko がこのコンピューターのアプリを確認・操作できるようにします。入力操作にはツールの承認設定が適用されます。",
+    "computerUseTimeoutMs": "デスクトップ操作のタイムアウト（ミリ秒）",
     "codeExecEnabled": "コード実行",
     "codeExecLanguages": "コード実行言語",
     "codeExecTimeoutMs": "コード実行タイムアウト（ms）",
@@ -512,6 +515,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'サイドバーの幅を変更',
     desktopUpdatePreparing: "更新を準備中",
     desktopUpdateStopping: "ダウンロードを停止中…",
     desktopUpdateReady: "更新の準備完了",
@@ -1012,6 +1016,18 @@ export default {
 
   // チャット
   chat: {
+    selectMessages: "メッセージを選択",
+    messagesSelected: "{count} 件選択中",
+    deleteSelectedMessages: "選択項目を削除",
+    deleteMessagesConfirm: "選択した {count} 件を完全に削除しますか？エージェントの各実行には、全ページの応答・思考・ツール記録が含まれます。削除内容は今後の会話コンテキストから除外されます。",
+    messageSelectionHint: "ユーザーメッセージは個別に、エージェントは実行単位で選択します。圧縮済みのメッセージは選択できません。",
+    messageAlreadyCompressed: "圧縮済みのため削除できません",
+    messageCompressionBoundaryUnknown: "圧縮の境界を確認できないため削除できません",
+    selectAgentRun: "エージェントの実行",
+    selectSingleMessage: "メッセージ",
+    messageSelectionFailed: "選択項目を読み込めませんでした",
+    messageDeleteFailed: "メッセージを削除できませんでした",
+    messagesDeleted: "{count} 件を削除しました",
     screenshot: {
       shortcut: {
         settings: "スクリーンショットのショートカットを設定",
@@ -3197,6 +3213,9 @@ export default {
 
   // 更新履歴
   groupChat: {
+    messageAlreadySummarized: "要約済みのため削除できません",
+    messageSummaryBoundaryUnknown: "要約の境界を確認できないため削除できません",
+    messageSelectionHint: "メンバーのメッセージまたはエージェントの実行全体を選択できます。要約済みのメッセージは選択できません。",
     routingHandoffIncomplete: '引き継ぎ情報が不完全な可能性があります。',
     routingLoopDetected: '協力が同じ所を回っている可能性があります。',
     routingSuggested: 'JEV の提案: {agent}',

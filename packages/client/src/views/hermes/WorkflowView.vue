@@ -3,6 +3,7 @@ import { agentMetadata, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
 import { useCodingAgentModels } from '@/composables/useCodingAgentModels'
 import { nativeModelLabel } from '@/utils/native-model-families'
 import PageSidebar from "@/components/layout/PageSidebar.vue"
+import SidebarResizeHandle from "@/components/layout/SidebarResizeHandle.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
 import PageLoading from '@/components/common/PageLoading.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
@@ -3242,6 +3243,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   <PageLoading :show="pageLoading" initial-only class="workflow-view">
     <PageSidebar>
     <aside class="workflow-sidebar" :class="{ collapsed: !showWorkflowSidebar }">
+      <SidebarResizeHandle />
       <div v-if="showWorkflowSidebar" class="page-sidebar-top">
         <PageSidebarNav
           active="workflow"
@@ -4294,6 +4296,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
 }
 
 .workflow-sidebar {
+  position: relative;
   width: $sidebar-width;
   min-height: 0;
   align-self: stretch;
@@ -4791,7 +4794,8 @@ html:is(.theme-card-bg, .theme-has-custom-background) .workflow-view {
   min-height: 0;
   border-inline-start: var(--border-width, 1px) solid $border-color;
   background: var(--workflow-run-panel-bg, $bg-card);
-  overflow: hidden;
+  // Keep focus/scrollIntoView from adding scrollLeft to the page track's transform.
+  overflow: clip;
   overscroll-behavior-x: contain;
   touch-action: pan-y;
 }

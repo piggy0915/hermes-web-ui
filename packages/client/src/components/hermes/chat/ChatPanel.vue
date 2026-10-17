@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { agentMetadata, isNativeCodingAgent, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
 import PageSidebar from "@/components/layout/PageSidebar.vue"
+import SidebarResizeHandle from "@/components/layout/SidebarResizeHandle.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
 import { usePageLoadingTask } from '@/composables/usePageLoading'
 import { useCodingAgentModels } from '@/composables/useCodingAgentModels'
@@ -126,6 +127,7 @@ const activeSessionSupportsPersistence = computed(() =>
 );
 const showRealtimeVoice = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
+const messageSelectionActionsTarget = ref<HTMLElement | null>(null);
 const chatInputRef = ref<(InstanceType<typeof ChatInput> & {
   addFiles?: (files: File[]) => void;
   focusComposer?: () => void;
@@ -2474,6 +2476,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
       class="session-list"
       :class="{ collapsed: !showSessions, 'session-list--navigation': contentMode !== 'chat' }"
     >
+      <SidebarResizeHandle />
       <div v-if="showSessions" class="page-sidebar-top">
         <PageSidebarNav
           :active="contentMode === 'connections' ? 'connections' : contentMode === 'agents' ? 'agents' : contentMode === 'models' ? 'models' : chatStore.runtimeMode === 'global_agent' ? 'global' : 'chat'"
@@ -3226,6 +3229,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             <template v-else>
             <MessageList
               ref="messageListRef"
+              :selection-actions-target="messageSelectionActionsTarget"
               :approval-portal-to-body="showRealtimeVoice"
               scroll-scope="chat"
             />
@@ -3240,7 +3244,11 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
               :persist-draft="composerPersistDraft"
               @model-click="handleHeaderModelClick"
               @voice-click="openRealtimeVoice"
-            />
+            >
+              <template #before-context-usage>
+                <div ref="messageSelectionActionsTarget" />
+              </template>
+            </ChatInput>
             </template>
           </div>
           <OutlinePanel
@@ -3400,6 +3408,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
 }
 
 .session-list {
+  position: relative;
   width: $sidebar-width;
   min-height: 0;
   align-self: stretch;

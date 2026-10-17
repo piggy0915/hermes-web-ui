@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "工具審批",
     "approvalTimeoutMs": "審批逾時（毫秒）",
     "permanentAllow": "永久允許的工具",
+    "computerUseEnabled": "電腦操作",
+    "computerUseHint": "允許 Ekko 查看並操作執行它的這台電腦上的應用程式。輸入操作遵循工具核准設定。",
+    "computerUseTimeoutMs": "桌面操作逾時（毫秒）",
     "codeExecEnabled": "程式碼執行",
     "codeExecLanguages": "程式碼執行語言",
     "codeExecTimeoutMs": "程式碼執行逾時（毫秒）",
@@ -500,6 +503,7 @@ export default {
   },
 
   sidebar: {
+    resize: '調整側邊欄寬度',
     desktopUpdatePreparing: "正在準備更新",
     desktopUpdateStopping: "正在停止下載…",
     desktopUpdateReady: "更新已就緒",
@@ -1026,6 +1030,18 @@ export default {
 
   // 對話
   chat: {
+    selectMessages: "多選訊息",
+    messagesSelected: "已選 {count} 則",
+    deleteSelectedMessages: "刪除所選",
+    deleteMessagesConfirm: "確定永久刪除所選的 {count} 則嗎？每輪 agent 會連同所有分頁中的回覆、思考和工具記錄一起刪除，後續對話上下文將排除這些內容。",
+    messageSelectionHint: "使用者訊息單獨選取，agent 每輪 run 算一項；已壓縮的訊息無法選取。",
+    messageAlreadyCompressed: "已壓縮，無法刪除",
+    messageCompressionBoundaryUnknown: "無法確認壓縮邊界，暫時無法刪除",
+    selectAgentRun: "一輪 agent 回覆",
+    selectSingleMessage: "單則訊息",
+    messageSelectionFailed: "載入可選訊息失敗",
+    messageDeleteFailed: "刪除訊息失敗",
+    messagesDeleted: "已刪除 {count} 則",
     screenshot: {
       shortcut: {
         settings: "設定截圖快捷鍵",
@@ -3380,6 +3396,9 @@ export default {
 
   // 群聊
   groupChat: {
+    messageAlreadySummarized: "已被總結，無法刪除",
+    messageSummaryBoundaryUnknown: "無法確定總結邊界，暫不可刪除",
+    messageSelectionHint: "可選擇成員訊息或整次 Agent 回覆；已總結的訊息不可選擇。",
     routingHandoffIncomplete: '交接資訊可能不完整。',
     routingLoopDetected: '偵測到協作可能在重複空轉。',
     routingSuggested: 'JEV 建議交給 {agent}',

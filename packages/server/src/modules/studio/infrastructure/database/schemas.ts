@@ -200,6 +200,8 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   history_revision: 'INTEGER NOT NULL DEFAULT 0',
   /** Milliseconds of the last history clear; provider usage before it describes deleted history. */
   history_cleared_at: 'INTEGER NOT NULL DEFAULT 0',
+  /** Context estimate after a history edit, separate from cumulative billed usage. */
+  context_usage_estimate: 'TEXT',
 }
 
 export const SESSIONS_INDEXES = {
@@ -868,6 +870,7 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   summaryApiMode: "TEXT NOT NULL DEFAULT ''",
   summaryEveryTurns: 'INTEGER NOT NULL DEFAULT 20',
   summaryGeneration: 'INTEGER NOT NULL DEFAULT 0',
+  messageDeletionRevision: 'INTEGER NOT NULL DEFAULT 0',
   triggerTokens: 'INTEGER NOT NULL DEFAULT 100000',
   maxHistoryTokens: 'INTEGER NOT NULL DEFAULT 32000',
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',

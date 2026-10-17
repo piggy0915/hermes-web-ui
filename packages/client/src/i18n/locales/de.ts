@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "Tool-Genehmigungen",
     "approvalTimeoutMs": "Genehmigungs-Timeout (ms)",
     "permanentAllow": "Dauerhaft erlaubte Tools",
+    "computerUseEnabled": "Computersteuerung",
+    "computerUseHint": "Ekko kann Anwendungen auf diesem Computer ansehen und bedienen. Eingaben folgen Ihren Werkzeugfreigaben.",
+    "computerUseTimeoutMs": "Zeitlimit für Desktopaktionen (ms)",
     "codeExecEnabled": "Codeausführung",
     "codeExecLanguages": "Sprachen für Codeausführung",
     "codeExecTimeoutMs": "Timeout der Codeausführung (ms)",
@@ -512,6 +515,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Seitenleistenbreite ändern',
     desktopUpdatePreparing: "Update wird vorbereitet",
     desktopUpdateStopping: "Download wird gestoppt…",
     desktopUpdateReady: "Update bereit",
@@ -1012,6 +1016,18 @@ export default {
 
   // Chat
   chat: {
+    selectMessages: "Nachrichten auswählen",
+    messagesSelected: "{count} ausgewählt",
+    deleteSelectedMessages: "Auswahl löschen",
+    deleteMessagesConfirm: "{count} ausgewählte Einträge dauerhaft löschen? Jeder Agentenlauf umfasst Antworten, Überlegungen und Werkzeugprotokolle auf allen Seiten. Gelöschte Inhalte werden aus dem zukünftigen Gesprächskontext entfernt.",
+    messageSelectionHint: "Benutzernachrichten einzeln oder einen ganzen Agentenlauf auswählen. Komprimierte Nachrichten sind nicht auswählbar.",
+    messageAlreadyCompressed: "Bereits komprimiert; Löschen nicht möglich",
+    messageCompressionBoundaryUnknown: "Komprimierungsgrenze unbekannt; Löschen deaktiviert",
+    selectAgentRun: "Agentenlauf",
+    selectSingleMessage: "Nachricht",
+    messageSelectionFailed: "Nachrichtenauswahl konnte nicht geladen werden",
+    messageDeleteFailed: "Nachrichten konnten nicht gelöscht werden",
+    messagesDeleted: "{count} Einträge gelöscht",
     screenshot: {
       shortcut: {
         settings: "Screenshot-Tastenkürzel festlegen",
@@ -3198,6 +3214,9 @@ jobTriggered: 'Job ausgelost',
 
   // Anderungsprotokoll
   groupChat: {
+    messageAlreadySummarized: "Bereits zusammengefasst; Löschen nicht möglich",
+    messageSummaryBoundaryUnknown: "Zusammenfassungsgrenze unbekannt; Löschen deaktiviert",
+    messageSelectionHint: "Mitgliedernachrichten oder ganze Agentenläufe auswählen. Zusammengefasste Nachrichten können nicht ausgewählt werden.",
     routingHandoffIncomplete: 'Die Übergabeinformationen könnten unvollständig sein.',
     routingLoopDetected: 'Mögliche wiederholte Kooperationsschleife erkannt.',
     routingSuggested: 'JEV empfiehlt {agent}',

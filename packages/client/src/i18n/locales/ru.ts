@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "Подтверждение инструментов",
     "approvalTimeoutMs": "Тайм-аут подтверждения (мс)",
     "permanentAllow": "Всегда разрешённые инструменты",
+    "computerUseEnabled": "Управление компьютером",
+    "computerUseHint": "Разрешить Ekko просматривать приложения на этом компьютере и управлять ими. Ввод подчиняется настройкам подтверждения инструментов.",
+    "computerUseTimeoutMs": "Тайм-аут действий на рабочем столе (мс)",
     "codeExecEnabled": "Выполнение кода",
     "codeExecLanguages": "Языки выполнения кода",
     "codeExecTimeoutMs": "Тайм-аут выполнения кода (мс)",
@@ -426,6 +429,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Изменить ширину боковой панели',
     desktopUpdatePreparing: "Подготовка обновления",
     desktopUpdateStopping: "Остановка загрузки…",
     desktopUpdateReady: "Обновление готово",
@@ -939,6 +943,18 @@ export default {
 
 
   chat: {
+    selectMessages: "Выбрать сообщения",
+    messagesSelected: "Выбрано: {count}",
+    deleteSelectedMessages: "Удалить выбранное",
+    deleteMessagesConfirm: "Навсегда удалить выбранные элементы ({count})? Каждый запуск агента включает ответы, рассуждения и записи инструментов на всех страницах. Удалённое содержимое будет исключено из контекста будущих разговоров.",
+    messageSelectionHint: "Выберите отдельные сообщения пользователя или весь запуск агента. Сжатые сообщения выбрать нельзя.",
+    messageAlreadyCompressed: "Уже сжато; удаление невозможно",
+    messageCompressionBoundaryUnknown: "Граница сжатия неизвестна; удаление отключено",
+    selectAgentRun: "Запуск агента",
+    selectSingleMessage: "Сообщение",
+    messageSelectionFailed: "Не удалось загрузить список сообщений",
+    messageDeleteFailed: "Не удалось удалить сообщения",
+    messagesDeleted: "Удалено элементов: {count}",
     screenshot: {
       shortcut: {
         settings: "Настроить сочетание для снимка экрана",
@@ -3074,6 +3090,9 @@ export default {
 
 
   groupChat: {
+    messageAlreadySummarized: "Уже включено в сводку; удаление невозможно",
+    messageSummaryBoundaryUnknown: "Граница сводки неизвестна; удаление отключено",
+    messageSelectionHint: "Выберите сообщения участников или целые запуски агента. Сообщения, включённые в сводку, выбрать нельзя.",
     routingHandoffIncomplete: 'Информация для передачи может быть неполной.',
     routingLoopDetected: 'Возможно повторное хождение по кругу.',
     routingSuggested: 'JEV предлагает {agent}',

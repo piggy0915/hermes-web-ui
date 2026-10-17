@@ -2,6 +2,7 @@ import { openCodeSessionHeaders } from '../../studio/public/opencode-session'
 import { invalidateProviderRuntime } from '../../studio/public/provider-runtime'
 import { openRouterAttributionHeaders } from '../../studio/public/openrouter-attribution'
 import { readFile } from 'fs/promises'
+import { isAuthorizedRuntimeProvider, readAuthorizedProviderStoredAuth } from '../services/providers/authorized-provider-credentials'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { getActiveEnvPath, getActiveAuthPath, getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../services/profiles/profile'
@@ -14,6 +15,7 @@ import { readAppConfig, writeAppConfig, providerDisplayLabel, type ModelVisibili
 import { listUserProfiles } from '../../studio/public/users'
 import { readModelContextRecord, upsertModelContextRecord } from '../../studio/public/provider-context'
 import { getModelContextLength } from '../services/models/context'
+import { isPlainModelSection } from '../services/models/model-section'
 import { createCatalogModelMetadataEnricher } from '../services/models/metadata'
 import { readProviderModelCatalogCache,
   refreshConfiguredProviderModelCatalogs,
@@ -295,6 +297,20 @@ function storedOAuthCredential(auth: any, providerKey: string): StoredOAuthCrede
   return { authorized: false, baseUrl: '' }
 }
 
+async function storedOAuthCredentialsForProfile(profile: string, storedAuth: any): Promise<Map<string, StoredOAuthCredential>> {
+  const credentials = new Map<string, StoredOAuthCredential>()
+  await Promise.all(Object.keys(PROVIDER_ENV_MAP).map(async providerKey => {
+    let auth = storedAuth
+    // Qwen uses its own external OAuth store rather than Hermes profile/root grants.
+    if (providerKey !== 'qwen-oauth' && isAuthorizedRuntimeProvider(providerKey)) {
+      try { auth = await readAuthorizedProviderStoredAuth(profile, providerKey) }
+      catch { auth = null }
+    }
+    credentials.set(providerKey, storedOAuthCredential(auth, providerKey))
+  }))
+  return credentials
+}
+
 function includeConfiguredDefaultModel(providerKey: string, modelsList: string[], currentDefault: string, currentDefaultProvider: string): string[] {
   if (!currentDefault || providerKey !== currentDefaultProvider) return modelsList
   return [...new Set([...modelsList, currentDefault])]
@@ -413,8 +429,9 @@ async function buildAvailableForProfile(
     const authPath = profileAuthPath(profile)
     if (existsSync(authPath)) storedAuth = JSON.parse(readFileSync(authPath, 'utf-8'))
   } catch {}
+  const oauthCredentials = await storedOAuthCredentialsForProfile(profile, storedAuth)
   const oauthCredential = (providerKey: string): StoredOAuthCredential => (
-    storedOAuthCredential(storedAuth, providerKey)
+    oauthCredentials.get(providerKey) || { authorized: false, baseUrl: '' }
   )
   const isOAuthAuthorized = (providerKey: string): boolean => oauthCredential(providerKey).authorized
 
@@ -1175,9 +1192,14 @@ export async function setConfigModel(ctx: any) {
   try {
     const profile = requestScopedProfileName(ctx)
     await updateConfigYamlForProfile(profile, (config) => {
-      config.model = {}
-      config.model.default = defaultModel
-      if (reqProvider) { config.model.provider = reqProvider }
+      const current = isPlainModelSection(config.model) ? { ...config.model } : {}
+      if (reqProvider && current.provider !== undefined && current.provider !== reqProvider) {
+        delete current.base_url
+        delete current.api_key
+      }
+      current.default = defaultModel
+      if (reqProvider) { current.provider = reqProvider }
+      config.model = current
       return config
     })
     ctx.body = { success: true }

@@ -29,6 +29,11 @@ const writeApprovalMessages = {
 }
 
 export default {
+  ekkoConfig: {
+    computerUseEnabled: 'Bilgisayar kullanımı',
+    computerUseHint: 'Ekko çalıştığı bilgisayardaki uygulamaları görebilir ve yönetebilir. Giriş işlemleri araç onayı ayarlarınıza uyar.',
+    computerUseTimeoutMs: 'Masaüstü işlemi zaman aşımı (ms)',
+  },
   changelog: {
     new_0_7_36_1: 'Arayüz bölgelerine göre arka plan, opaklık, bulanıklık, köşe, kenarlık ve gölgeler için canlı tema özelleştirmesi eklendi (#3394)',
     new_0_7_36_2: 'Oluşturma, çoğaltma, değiştirme, içe aktarma, dışa aktarma ve hesap başına kaydetme destekli adlandırılmış temalar eklendi (#3394)',
@@ -332,6 +337,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Kenar çubuğunu yeniden boyutlandır',
     chat: 'Sohbet', backToChat: 'Geri', search: 'Ara', apiRelay: 'API geçidi', history: 'Geçmiş', jobs: 'İşler', kanban: 'Kanban',
     workflow: 'İş akışı', models: 'Modeller', profiles: 'Profiller', skills: 'Yetenekler', plugins: 'Eklentiler', mcp: 'MCP', petdex: 'Evcil hayvanlar',
     memory: 'Bellek', logs: 'Günlükler', usage: 'Kullanım', performance: 'Performans', journey: 'Yolculuk', skillsUsage: 'Yetenek kullanımı',
@@ -369,6 +375,18 @@ export default {
   },
 
   chat: {
+    selectMessages: "Mesajları seç",
+    messagesSelected: "{count} seçildi",
+    deleteSelectedMessages: "Seçilenleri sil",
+    deleteMessagesConfirm: "Seçilen {count} öğe kalıcı olarak silinsin mi? Her ajan çalışması tüm sayfalardaki yanıtları, düşünceleri ve araç kayıtlarını içerir. Silinen içerik sonraki konuşmaların bağlamından çıkarılır.",
+    messageSelectionHint: "Kullanıcı mesajlarını tek tek veya bir ajanın tüm çalışmasını seçin. Sıkıştırılmış mesajlar seçilemez.",
+    messageAlreadyCompressed: "Zaten sıkıştırılmış; silinemez",
+    messageCompressionBoundaryUnknown: "Sıkıştırma sınırı bilinmiyor; silme devre dışı",
+    selectAgentRun: "Ajan çalışması",
+    selectSingleMessage: "Mesaj",
+    messageSelectionFailed: "Mesaj seçimi yüklenemedi",
+    messageDeleteFailed: "Mesajlar silinemedi",
+    messagesDeleted: "{count} öğe silindi",
     approvalAgree: 'Onayla',
     reasoningEffort: {
       tooltip: 'Akıl yürütme çabası',
@@ -396,6 +414,9 @@ export default {
     runUsageOutput: 'Çıktı jetonları', runUsageInput: 'Girdi jetonları', runUsageCache: 'Önbellek isabetleri', runUsageCost: 'Tahmini maliyet', runUsageSpeed: 'Jeton hızı', runUsageAverageSpeed: 'Ortalama hız', runUsageEstimatedSpeed: 'Tahmini hız',
   },
   groupChat: {
+    messageAlreadySummarized: "Zaten özetlendi; silinemez",
+    messageSummaryBoundaryUnknown: "Özet sınırı bilinmiyor; silme devre dışı",
+    messageSelectionHint: "Üye mesajlarını veya tüm ajan çalıştırmalarını seçin. Özetlenmiş mesajlar seçilemez.",
     routingHandoffIncomplete: 'Devir bilgileri eksik olabilir.',
     routingLoopDetected: 'Olası bir tekrarlanan iş birliği döngüsü algılandı.',
     routingSuggested: 'JEV, {agent} aracısını öneriyor',

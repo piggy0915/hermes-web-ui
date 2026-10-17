@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "Aprobaciones de herramientas",
     "approvalTimeoutMs": "Tiempo límite de aprobación (ms)",
     "permanentAllow": "Herramientas permitidas permanentemente",
+    "computerUseEnabled": "Control del ordenador",
+    "computerUseHint": "Permite que Ekko observe y maneje aplicaciones en este ordenador. Las entradas siguen la configuración de aprobación de herramientas.",
+    "computerUseTimeoutMs": "Tiempo límite de operaciones de escritorio (ms)",
     "codeExecEnabled": "Ejecución de código",
     "codeExecLanguages": "Lenguajes de ejecución",
     "codeExecTimeoutMs": "Tiempo límite de ejecución (ms)",
@@ -512,6 +515,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Cambiar el ancho de la barra lateral',
     desktopUpdatePreparing: "Preparando actualización",
     desktopUpdateStopping: "Deteniendo descarga…",
     desktopUpdateReady: "Actualización lista",
@@ -1012,6 +1016,18 @@ export default {
 
   // Chat
   chat: {
+    selectMessages: "Seleccionar mensajes",
+    messagesSelected: "{count} seleccionados",
+    deleteSelectedMessages: "Eliminar selección",
+    deleteMessagesConfirm: "¿Eliminar permanentemente los {count} elementos seleccionados? Cada ejecución incluye respuestas, razonamiento y registros de herramientas de todas las páginas. El contenido eliminado se excluirá del contexto futuro.",
+    messageSelectionHint: "Selecciona mensajes de usuario individuales o una ejecución completa del agente. Los mensajes comprimidos no se pueden seleccionar.",
+    messageAlreadyCompressed: "Ya comprimido; no se puede eliminar",
+    messageCompressionBoundaryUnknown: "Límite de compresión desconocido; eliminación desactivada",
+    selectAgentRun: "Ejecución del agente",
+    selectSingleMessage: "Mensaje",
+    messageSelectionFailed: "No se pudo cargar la selección",
+    messageDeleteFailed: "No se pudieron eliminar los mensajes",
+    messagesDeleted: "{count} elementos eliminados",
     screenshot: {
       shortcut: {
         settings: "Configurar atajo de captura",
@@ -3198,6 +3214,9 @@ jobTriggered: 'Job ejecutado',
 
   // Registro de cambios
   groupChat: {
+    messageAlreadySummarized: "Ya resumido; no se puede eliminar",
+    messageSummaryBoundaryUnknown: "Límite del resumen no disponible; eliminación deshabilitada",
+    messageSelectionHint: "Selecciona mensajes de miembros o ejecuciones completas del agente. No se pueden seleccionar mensajes resumidos.",
     routingHandoffIncomplete: 'La información de entrega puede estar incompleta.',
     routingLoopDetected: 'Se detectó un posible ciclo de colaboración repetido.',
     routingSuggested: 'JEV sugiere {agent}',

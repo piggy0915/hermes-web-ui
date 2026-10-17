@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "موافقات الأدوات",
     "approvalTimeoutMs": "مهلة الموافقة (مللي ثانية)",
     "permanentAllow": "الأدوات المسموح بها دائمًا",
+    "computerUseEnabled": "التحكم بالكمبيوتر",
+    "computerUseHint": "السماح لـ Ekko بمشاهدة تطبيقات هذا الكمبيوتر والتحكم بها. تخضع عمليات الإدخال لإعدادات الموافقة على الأدوات.",
+    "computerUseTimeoutMs": "مهلة عمليات سطح المكتب (مللي ثانية)",
     "codeExecEnabled": "تنفيذ الشفرة",
     "codeExecLanguages": "لغات تنفيذ الشفرة",
     "codeExecTimeoutMs": "مهلة تنفيذ الشفرة (مللي ثانية)",
@@ -500,6 +503,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'تغيير عرض الشريط الجانبي',
     desktopUpdatePreparing: "جارٍ تجهيز التحديث",
     desktopUpdateStopping: "جارٍ إيقاف التنزيل…",
     desktopUpdateReady: "التحديث جاهز",
@@ -1026,6 +1030,18 @@ export default {
 
   // Chat
   chat: {
+    selectMessages: "تحديد الرسائل",
+    messagesSelected: "تم تحديد {count}",
+    deleteSelectedMessages: "حذف المحدد",
+    deleteMessagesConfirm: "هل تريد حذف {count} من العناصر المحددة نهائيًا؟ تشمل كل جولة للوكيل الردود والتفكير وسجلات الأدوات في جميع الصفحات. سيُستبعد المحتوى المحذوف من سياق المحادثات القادمة.",
+    messageSelectionHint: "حدد رسائل المستخدم منفردة أو جولة الوكيل كاملة. لا يمكن تحديد الرسائل المضغوطة.",
+    messageAlreadyCompressed: "تم ضغطها؛ لا يمكن حذفها",
+    messageCompressionBoundaryUnknown: "حد الضغط غير متاح؛ الحذف معطل",
+    selectAgentRun: "جولة الوكيل",
+    selectSingleMessage: "رسالة",
+    messageSelectionFailed: "تعذر تحميل الرسائل القابلة للتحديد",
+    messageDeleteFailed: "تعذر حذف الرسائل",
+    messagesDeleted: "تم حذف {count} من العناصر",
     screenshot: {
       shortcut: {
         settings: "تعيين اختصار لقطة الشاشة",
@@ -3419,6 +3435,9 @@ export default {
 
   // Group Chat
   groupChat: {
+    messageAlreadySummarized: "تم تلخيصها بالفعل؛ لا يمكن حذفها",
+    messageSummaryBoundaryUnknown: "حد الملخص غير متاح؛ الحذف معطل",
+    messageSelectionHint: "حدد رسائل الأعضاء أو عمليات تشغيل الوكيل كاملة. لا يمكن تحديد الرسائل الملخصة.",
     routingHandoffIncomplete: 'قد تكون معلومات التسليم غير مكتملة.',
     routingLoopDetected: 'تم اكتشاف دوران متكرر محتمل في التعاون.',
     routingSuggested: 'يقترح JEV \u200f{agent}',

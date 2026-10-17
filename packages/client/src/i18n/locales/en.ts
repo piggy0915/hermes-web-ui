@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "Tool approvals",
     "approvalTimeoutMs": "Approval timeout (ms)",
     "permanentAllow": "Permanently allowed tools",
+    "computerUseEnabled": "Computer Use",
+    "computerUseHint": "Let Ekko observe and operate applications on this computer. Input follows your tool approval settings.",
+    "computerUseTimeoutMs": "Desktop operation timeout (ms)",
     "codeExecEnabled": "Code execution",
     "codeExecLanguages": "Code execution languages",
     "codeExecTimeoutMs": "Code execution timeout (ms)",
@@ -500,6 +503,7 @@ export default {
   },
 
   sidebar: {
+    resize: 'Resize sidebar',
     desktopUpdatePreparing: "Preparing update",
     desktopUpdateStopping: "Stopping download…",
     desktopUpdateReady: "Update ready",
@@ -1033,6 +1037,18 @@ export default {
 
   // Chat
   chat: {
+    selectMessages: "Select messages",
+    messagesSelected: "{count} selected",
+    deleteSelectedMessages: "Delete selected",
+    deleteMessagesConfirm: "Permanently delete {count} selected items? Each agent run includes its replies, reasoning and tool records on all pages. Deleted content will be removed from future conversation context.",
+    messageSelectionHint: "Select user messages individually or an entire agent run. Compressed messages cannot be selected.",
+    messageAlreadyCompressed: "Already compressed; cannot delete",
+    messageCompressionBoundaryUnknown: "Compression boundary unavailable; deletion disabled",
+    selectAgentRun: "Agent run",
+    selectSingleMessage: "Message",
+    messageSelectionFailed: "Unable to load message selection",
+    messageDeleteFailed: "Unable to delete messages",
+    messagesDeleted: "Deleted {count} items",
     screenshot: {
       shortcut: {
         settings: "Set screenshot shortcut",
@@ -3438,6 +3454,9 @@ export default {
 
   // Group Chat
   groupChat: {
+    messageAlreadySummarized: "Already summarized; cannot delete",
+    messageSummaryBoundaryUnknown: "Summary boundary unavailable; deletion disabled",
+    messageSelectionHint: "Select member messages or entire agent runs. Summarized messages cannot be selected.",
     routingHandoffIncomplete: 'Handoff information may be incomplete.',
     routingLoopDetected: 'Possible repeated collaboration loop detected.',
     routingSuggested: 'JEV suggests {agent}',

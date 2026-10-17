@@ -175,6 +175,9 @@ export default {
     "approvalsEnabled": "도구 승인",
     "approvalTimeoutMs": "승인 시간 제한(ms)",
     "permanentAllow": "항상 허용할 도구",
+    "computerUseEnabled": "컴퓨터 조작",
+    "computerUseHint": "Ekko가 이 컴퓨터의 앱을 보고 조작하도록 허용합니다. 입력 작업에는 도구 승인 설정이 적용됩니다.",
+    "computerUseTimeoutMs": "데스크톱 작업 제한 시간(ms)",
     "codeExecEnabled": "코드 실행",
     "codeExecLanguages": "코드 실행 언어",
     "codeExecTimeoutMs": "코드 실행 시간 제한(ms)",
@@ -512,6 +515,7 @@ export default {
   },
 
   sidebar: {
+    resize: '사이드바 너비 조절',
     desktopUpdatePreparing: "업데이트 준비 중",
     desktopUpdateStopping: "다운로드 중지 중…",
     desktopUpdateReady: "업데이트 준비 완료",
@@ -1012,6 +1016,18 @@ export default {
 
   // 채팅
   chat: {
+    selectMessages: "메시지 선택",
+    messagesSelected: "{count}개 선택됨",
+    deleteSelectedMessages: "선택 항목 삭제",
+    deleteMessagesConfirm: "선택한 {count}개 항목을 영구 삭제할까요? 에이전트 실행에는 모든 페이지의 응답, 추론 및 도구 기록이 포함됩니다. 삭제된 내용은 이후 대화 컨텍스트에서 제외됩니다.",
+    messageSelectionHint: "사용자 메시지는 개별로, 에이전트는 실행 전체를 선택합니다. 압축된 메시지는 선택할 수 없습니다.",
+    messageAlreadyCompressed: "이미 압축되어 삭제할 수 없습니다",
+    messageCompressionBoundaryUnknown: "압축 경계를 확인할 수 없어 삭제할 수 없습니다",
+    selectAgentRun: "에이전트 실행",
+    selectSingleMessage: "메시지",
+    messageSelectionFailed: "선택 가능한 메시지를 불러오지 못했습니다",
+    messageDeleteFailed: "메시지를 삭제하지 못했습니다",
+    messagesDeleted: "{count}개 항목 삭제됨",
     screenshot: {
       shortcut: {
         settings: "스크린샷 단축키 설정",
@@ -3197,6 +3213,9 @@ export default {
 
   // 변경 이력
   groupChat: {
+    messageAlreadySummarized: "이미 요약되어 삭제할 수 없습니다",
+    messageSummaryBoundaryUnknown: "요약 경계를 확인할 수 없어 삭제할 수 없습니다",
+    messageSelectionHint: "멤버 메시지 또는 에이전트 실행 전체를 선택하세요. 요약된 메시지는 선택할 수 없습니다.",
     routingHandoffIncomplete: '인계 정보가 불완전할 수 있습니다.',
     routingLoopDetected: '협업이 반복 공회전 중일 수 있습니다.',
     routingSuggested: 'JEV 추천: {agent}',
