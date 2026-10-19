@@ -3,6 +3,31 @@ import { themeAppearanceMessages } from '../theme-appearance-locales'
 import { socialMessagesPt } from '../social-messages-locales'
 
 export default {
+  computerUsePermissions: {
+    "promptTitle": "O controle do computador precisa de permissão",
+    "promptDescription": "O Ekko Studio não tem as seguintes permissões do sistema. As operações correspondentes podem não ser concluídas.",
+    "promptLaterHint": "Você também pode autorizar depois em Configurações → Ferramentas → Controle do computador.",
+    "promptGo": "Abrir permissões",
+    "promptLater": "Agora não",
+    "title": "Permissões de controle do computador",
+    "intro": "Permita que o Ekko Studio veja e controle apps neste Mac.",
+    "complete": "As duas permissões do sistema estão ativadas.",
+    "refresh": "Verificar novamente",
+    "checking": "Verificando…",
+    "granted": "Ativada",
+    "restricted": "Restrita",
+    "unknown": "Desconhecida",
+    "needed": "Necessária",
+    "accessibility": "Acessibilidade",
+    "screenRecording": "Gravação de Tela",
+    "accessibilityHint": "Para clicar, digitar e ler controles de outros apps.",
+    "screenRecordingHint": "Captura janelas de apps para que o Ekko veja a tela.",
+    "authorize": "Autorizar",
+    "guide": "Em Ajustes do Sistema → Privacidade e Segurança, ative cada permissão para o Ekko Studio. Se o app não aparecer, adicione-o com +.",
+    "restartHint": "As permissões serão verificadas ao retornar. Se o macOS solicitar a reabertura do app, salve seu trabalho e reinicie o Ekko Studio.",
+    "checkFailed": "Não foi possível ler as permissões. Verifique novamente.",
+    "openFailed": "Não foi possível abrir a autorização. Abra Ajustes do Sistema → Privacidade e Segurança manualmente."
+  },
   jev: {
     browserAutomation: "Automação do navegador integrado",
     browserAutomationHint: "As avaliações opcionais usam a conexão JEV salva neste perfil a partir da próxima avaliação. Os rótulos visíveis são enviados ao JEV, sem os valores digitados. Quando desativado, indisponível ou incerto, o fluxo original é mantido.",

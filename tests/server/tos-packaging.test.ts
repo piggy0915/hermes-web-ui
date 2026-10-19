@@ -59,6 +59,7 @@ describe('standalone TOS test workflow', () => {
     expect(workflow.on.pull_request.paths).toEqual([
       '.github/workflows/tos-package-test.yml', 'packages/tos/**',
       'scripts/pack-tos-deb.mjs', 'scripts/test-tos-platform.mjs',
+      'scripts/test-tos-install.sh',
       'tests/server/tos-packaging.test.ts', 'tests/server/tos-platform.test.ts',
     ])
     expect(workflow.permissions).toEqual({ contents: 'read' })
@@ -76,7 +77,11 @@ describe('standalone TOS test workflow', () => {
     expect(sharpIndex).toBeGreaterThan(pruneIndex)
     expect(stageIndex).toBeGreaterThan(sharpIndex)
     expect(steps.indexOf(build)).toBeGreaterThan(stageIndex)
+    const install = steps.find((step: any) => step.name === 'Test clean installation without host venv')
+    expect(steps.indexOf(install)).toBeGreaterThan(steps.indexOf(build))
+    expect(install.run).toBe('bash scripts/test-tos-install.sh release/tos/*.deb')
     const upload = steps.find((step: any) => step.uses === 'actions/upload-artifact@v4')
+    expect(steps.indexOf(upload)).toBeGreaterThan(steps.indexOf(install))
     expect(upload.with['if-no-files-found']).toBe('error')
     expect(upload.with['retention-days']).toBe(7)
     expect(upload.with.path.trim().split('\n')).toEqual([
@@ -227,10 +232,14 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('TOS Debi
     expect(existsSync(join(app, 'com.hermeswebui.studio.lang'))).toBe(true)
     expect(existsSync(join(app, 'images/icons/com.hermeswebui.studio.svg'))).toBe(true)
     const config = JSON.parse(readFileSync(join(app, 'config.ini'), 'utf8'))
-    expect(config).toMatchObject({ open_path: true, path: 'http://${ip}:8648', application_type: 'deb', platform: 'x86_64' })
+    expect(config).toMatchObject({ open_path: true, path: '/com.hermeswebui.studio/', port: 8648, application_type: 'deb', platform: 'x86_64' })
     expect(config.type).toBeUndefined()
     expect(config.user).not.toBe('root')
     const service = readFileSync(join(app, 'init.d/ekko-studio-tos.service'), 'utf8')
+    expect(service).not.toMatch(/^\s*Restart(?:Sec)?\s*=/m)
+    const nginx = readFileSync(join(app, 'nginx/com.hermeswebui.studio.conf'), 'utf8')
+    expect(nginx).toContain(`location = ${config.path} {`)
+    expect(nginx).toContain(`return 302 http://$host:${config.port}/;`)
     for (const key of ['HERMES_WEB_UI_MCP_BIN', 'HERMES_AGENT_NODE']) {
       const configured = service.split('\n').find(line => line.startsWith(`Environment=${key}=`))!.split('=').slice(2).join('=')
       const installed = join(unpacked, configured)
@@ -246,6 +255,7 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('TOS Debi
       expect(server.args?.[0]).toBe(join(app, 'depends/webui/bin/ekko-studio-mcp.mjs'))
     }
     expect(execFileSync('dpkg-deb', ['--field', deb, 'Depends'], { encoding: 'utf8' })).toContain('bzip2')
+    expect(execFileSync('dpkg-deb', ['--field', deb, 'Depends'], { encoding: 'utf8' })).not.toMatch(/python3(?:\.\d+)?-venv/)
     const languages = readFileSync(join(app, `${result.id}.lang`), 'utf8')
     for (const language of TOS_LANGUAGES) expect(languages).toContain(`[${language}]\n`)
     const icon = readFileSync(join(app, 'images/icons', `${result.id}.svg`), 'utf8')
@@ -284,9 +294,37 @@ describe.runIf(process.platform === 'linux' && process.arch === 'x64')('TOS Debi
     // A byte change must fail verification even when Deb/TOS identities still match.
     const alteredStage = join(root, 'altered')
     execFileSync('dpkg-deb', ['--raw-extract', deb, alteredStage])
-    writeFileSync(join(alteredStage, 'usr/local', result.id, 'README.md'), 'modified without updating checksums')
+    const alteredApp = join(alteredStage, 'usr/local', result.id)
     const alteredDeb = join(root, 'altered.deb')
-    execFileSync('dpkg-deb', ['-Zgzip', '--build', alteredStage, alteredDeb])
+    const controlPath = join(alteredStage, 'DEBIAN/control')
+    const control = readFileSync(controlPath, 'utf8')
+    for (const unavailable of ['python3-venv', 'python3.10-venv']) {
+      writeFileSync(controlPath, control.replace(/^Depends: /m, `Depends: ${unavailable}, `))
+      execFileSync('dpkg-deb', ['-Znone', '--build', alteredStage, alteredDeb])
+      expect(() => verifyTosDeb(alteredDeb)).toThrow('unavailable host python3-venv')
+    }
+    writeFileSync(controlPath, control)
+    // Rebuild actual artifacts with the reported regressions. The review guards
+    // must reject them before the unrelated checksum checks.
+    for (const invalid of [
+      { ...config, path: 'http://${ip}:8648' },
+      { ...config, path: '//example.invalid/' },
+      { ...config, port: undefined },
+      { ...config, port: 9999 },
+    ]) {
+      writeFileSync(join(alteredApp, 'config.ini'), JSON.stringify(invalid))
+      execFileSync('dpkg-deb', ['-Znone', '--build', alteredStage, alteredDeb])
+      expect(() => verifyTosDeb(alteredDeb)).toThrow('C21')
+    }
+    writeFileSync(join(alteredApp, 'config.ini'), readFileSync(join(app, 'config.ini')))
+    for (const directive of ['Restart=on-failure', '  Restart = no', 'RestartSec=10']) {
+      writeFileSync(join(alteredApp, 'init.d/ekko-studio-tos.service'), service.replace('[Service]', `[Service]\n${directive}`))
+      execFileSync('dpkg-deb', ['-Znone', '--build', alteredStage, alteredDeb])
+      expect(() => verifyTosDeb(alteredDeb)).toThrow('S05')
+    }
+    writeFileSync(join(alteredApp, 'init.d/ekko-studio-tos.service'), service)
+    writeFileSync(join(alteredStage, 'usr/local', result.id, 'README.md'), 'modified without updating checksums')
+    execFileSync('dpkg-deb', ['-Znone', '--build', alteredStage, alteredDeb])
     expect(() => verifyTosDeb(alteredDeb)).toThrow('checksum mismatch')
     expect(JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version).toBe('99.0.0')
   }, 120_000)
