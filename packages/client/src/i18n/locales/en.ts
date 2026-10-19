@@ -3,6 +3,42 @@ import { themeAppearanceMessages } from '../theme-appearance-locales'
 import { socialMessagesEn } from '../social-messages'
 
 export default {
+  modelApi: {
+    "refresh": "Refresh",
+    "title": "Model API",
+    "description": "Call your available models from clients that support the OpenAI Responses API.",
+    "failed": "Operation failed. Please try again.",
+    "copyFailed": "Copy failed. Select the text and copy it manually.",
+    "unsupported": "Unavailable for this API",
+    "connection": "Connection",
+    "baseUrl": "Base URL",
+    "addressHint": "Use an address reachable by your client. Replace localhost when connecting from another device.",
+    "keys": "My API keys",
+    "keysHint": "Keys belong to your account and only allow model requests. They remain valid until revoked. Provider credentials stay on the server.",
+    "namePlaceholder": "e.g. My coding client",
+    "keyName": "Key name",
+    "createKey": "Create key",
+    "noKeys": "No API keys yet",
+    "createdAt": "Created {date}",
+    "lastUsed": "Last used {date}",
+    "neverUsed": "Not used yet",
+    "revoke": "Revoke",
+    "revokeConfirm": "Revoke “{name}”? New requests using this key will be rejected.",
+    "revoked": "API key revoked",
+    "models": "Models",
+    "modelsHint": "{available} of {total} models support this API. Provider models are combined across accessible Profiles, with duplicate IDs listed once.",
+    "selectModel": "Select a model",
+    "copyModel": "Copy model ID",
+    "noModels": "Configure a provider and models in the General tab first.",
+    "example": "Python example",
+    "historyHint": "Send the full conversation history on each request. Preserve returned output items, including reasoning data, when continuing tool calls.",
+    "usage": "External usage",
+    "usageHint": "Every call to this endpoint counts as external usage, including calls from Studio itself. Internal usage is recorded separately.",
+    "viewUsage": "View external usage",
+    "created": "API key created",
+    "oneTimeHint": "Copy and save this key now. The full key will not be shown again.",
+    "savedKey": "I saved the key"
+  },
   computerUsePermissions: {
     "promptTitle": "Computer Use needs permission",
     "promptDescription": "Ekko Studio is missing the following system permissions. Related desktop operations may not complete.",
@@ -3711,6 +3747,13 @@ export default {
 
   // Usage
   usage: {
+    origin: {
+      label: "Usage category",
+      internal: "Internal usage",
+      external: "External usage",
+      description: "Studio sessions and model API requests are counted separately. Calling this API from Studio appears once in each category.",
+      accountScope: "External usage is attributed to the authenticated Studio user making the API request.",
+    },
     dashboard: {
       profile: "Profile",
       allProfiles: "All Profiles",
@@ -3899,6 +3942,17 @@ export default {
 
   // Changelog
   changelog: {
+    new_0_7_37_1: "Added an account-wide Model API for calling available models through the OpenAI Responses API, managing dedicated keys and tracking external usage separately (#3433)",
+    new_0_7_37_2: "Added native Computer Use to desktop Ekko for viewing and controlling local apps, with macOS permission guidance and reminders (#3411, #3427)",
+    new_0_7_37_3: "Added message multi-selection for copying and deleting in chats and group chats, with protection for active tasks and group summaries and simpler action toolbars (#3422, #3423, #3425)",
+    new_0_7_37_4: "Chat, group-chat and workflow sidebars can now be resized by dragging within minimum and maximum widths (#3408)",
+    new_0_7_37_5: "Full provider model catalogs now load on demand, improving performance for large model lists (#3401)",
+    new_0_7_37_6: "Coding Agent API modes now follow Provider settings; fixed Responses reasoning-effort forwarding and cross-model reasoning history compatibility (#3430, #3416, #3432)",
+    new_0_7_37_7: "Fixed stopping chats, recalling queued messages, tool approval results and group task-plan authentication, and prevented misattributed changes in shared workspaces (#3404, #3409, #3414, #3415)",
+    new_0_7_37_8: "Fixed Node code execution mode in the desktop Electron environment (#3412)",
+    new_0_7_37_9: "Clearing Claude OAuth login now removes all profile-managed credentials to prevent stale login state (#3442)",
+    new_0_7_37_10: "Added Windows ARM64 desktop installer build support (#3428)",
+    new_0_7_37_11: "Fixed TOS 7 clean installation, portal paths and service restart policies, reducing reliance on the host environment and pre-created users (#3413, #3431)",
     new_0_7_36_1: 'Added live theme customization for backgrounds, opacity, blur, corners, borders, and shadows across interface regions (#3394)',
     new_0_7_36_2: 'Added named theme presets with creation, duplication, switching, import, export, and per-account persistence (#3394)',
     new_0_7_36_3: 'Model visibility settings now apply consistently to model selectors, with performance notices for large catalogs (#3392)',
@@ -3916,15 +3970,5 @@ export default {
     new_0_7_35_6: 'Fixed token usage reporting for Coding Agents using compatible model endpoints so automatic compaction can track context usage correctly (#3334)',
     new_0_7_35_7: 'Anthropic-compatible requests now use model output limits to reduce premature truncation of long replies and tool calls (#3334)',
     new_0_7_35_8: 'Fixed custom Anthropic URL handling in Ekko for root URLs, versioned paths, and complete message endpoints (#3384)',
-    new_0_7_34_1: 'Coding Agents can select native models and reasoning effort in chats, group chats, and workflows, and remember the selected configuration (#3354, #3360)',
-    new_0_7_34_2: 'Unified model selection dialogs with provider and model columns, improving search, scrolling, and small-screen layouts (#3355)',
-    new_0_7_34_3: 'Added account and Profile filters, model and Agent usage breakdowns, and improved mobile layouts to the usage overview (#3363)',
-    new_0_7_34_4: 'Fixed cost, token, and percentage display precision, and mismatched trend charts and totals for rolling time windows (#3373)',
-    new_0_7_34_5: 'Added desktop remote server mode to connect to a self-hosted Web UI without starting the local server or runtime (#3366)',
-    new_0_7_34_6: 'Fixed mouse wheel navigation of Agent cards and improved fades at the list edges (#3351)',
-    new_0_7_34_7: 'Fixed thinking content appearing in chat replies when the model leaves a thinking tag unclosed (#3365)',
-    new_0_7_34_8: 'Fixed session category submenus failing to scroll when they contain many items (#3374)',
-    new_0_7_34_9: 'Fixed managed MCP connection issues caused by inheriting unrelated authentication tokens (#3359)',
-    new_0_7_34_10: 'Fixed custom provider model discovery metadata being reported as unknown configuration and reduced duplicate warnings (#3375)',
   },
 }

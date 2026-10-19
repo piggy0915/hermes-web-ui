@@ -3,6 +3,42 @@ import { themeAppearanceMessages } from '../theme-appearance-locales'
 import { socialMessagesZh } from '../social-messages'
 
 export default {
+  modelApi: {
+    "refresh": "刷新",
+    "title": "模型 API",
+    "description": "让支持 OpenAI Responses API 的客户端调用可用模型。",
+    "failed": "操作失败，请重试。",
+    "copyFailed": "复制失败，请选中文字手动复制。",
+    "unsupported": "此接口暂不支持",
+    "connection": "接入信息",
+    "baseUrl": "Base URL",
+    "addressHint": "请使用客户端能够访问的地址；从其他设备接入时，请替换 localhost。",
+    "keys": "我的 API 密钥",
+    "keysHint": "密钥属于当前账号，仅允许模型请求，撤销前持续有效。Provider 凭证始终保留在服务器。",
+    "namePlaceholder": "例如：我的编程客户端",
+    "keyName": "密钥名称",
+    "createKey": "创建密钥",
+    "noKeys": "暂无 API 密钥",
+    "createdAt": "创建于 {date}",
+    "lastUsed": "最近使用 {date}",
+    "neverUsed": "尚未使用",
+    "revoke": "撤销",
+    "revokeConfirm": "撤销「{name}」？使用此密钥的新请求将被拒绝。",
+    "revoked": "API 密钥已撤销",
+    "models": "模型列表",
+    "modelsHint": "共 {total} 个模型，其中 {available} 个支持此接口。后端汇总有权访问的各 Profile 中的 Provider，同名模型 ID 仅保留一份。",
+    "selectModel": "选择模型",
+    "copyModel": "复制模型 ID",
+    "noModels": "请先在通用标签页配置 Provider 和模型。",
+    "example": "Python 调用示例",
+    "historyHint": "每次请求需发送完整对话历史。继续工具调用时，请保留返回的 output 项，包括推理数据。",
+    "usage": "外部用量",
+    "usageHint": "此接口的所有调用都计入外部用量，包括 Studio 自身发起的调用。内部用量单独记录。",
+    "viewUsage": "查看外部用量",
+    "created": "API 密钥已创建",
+    "oneTimeHint": "请立即复制并保存密钥，完整密钥仅显示这一次。",
+    "savedKey": "我已保存密钥"
+  },
   computerUsePermissions: {
     "promptTitle": "电脑操作需要授权",
     "promptDescription": "Ekko Studio 尚未获得以下系统权限，相关电脑操作可能无法完成。",
@@ -3759,6 +3795,13 @@ export default {
 
   // 用量统计
   usage: {
+    origin: {
+      label: "用量类别",
+      internal: "内部用量",
+      external: "外部用量",
+      description: "Studio 会话与模型接口分别统计。Studio 调用该接口时，两类用量各记录一次。",
+      accountScope: "外部用量归属于调用接口时通过认证的 Studio 用户。",
+    },
     dashboard: {
       profile: "配置",
       allProfiles: "全部配置",
@@ -3947,6 +3990,17 @@ export default {
 
   // 更新日志
   changelog: {
+    new_0_7_37_1: "新增账号级模型 API，可通过 OpenAI Responses API 调用可用模型，管理专用密钥并单独统计外部用量 (#3433)",
+    new_0_7_37_2: "桌面端 Ekko 新增 Computer Use，支持查看和操作本机应用，并提供 macOS 权限指引及授权提醒 (#3411、#3427)",
+    new_0_7_37_3: "单聊和群聊支持多选消息复制与删除，保护进行中的任务和群聊摘要，并简化消息操作工具栏 (#3422、#3423、#3425)",
+    new_0_7_37_4: "聊天、群聊和工作流侧栏支持拖拽调整宽度，并限制最小和最大尺寸 (#3408)",
+    new_0_7_37_5: "按需加载完整的服务商模型目录，改善大型模型列表的加载性能 (#3401)",
+    new_0_7_37_6: "编程 Agent 的接口模式跟随 Provider 配置，修复 Responses 推理强度传递和跨模型思考历史兼容性 (#3430、#3416、#3432)",
+    new_0_7_37_7: "修复聊天停止、队列撤回、工具审批结果和群聊计划鉴权，避免并发会话误显示其他会话的工作区改动 (#3404、#3409、#3414、#3415)",
+    new_0_7_37_8: "修复桌面端 Electron 环境中的 Node 代码执行模式 (#3412)",
+    new_0_7_37_9: "清除 Claude OAuth 登录时同步移除各 Profile 管理的凭据，避免残留登录状态 (#3442)",
+    new_0_7_37_10: "新增 Windows ARM64 桌面安装包构建支持 (#3428)",
+    new_0_7_37_11: "修复 TOS 7 全新安装、入口路径和服务重启策略，减少对主机环境及预建用户的依赖 (#3413、#3431)",
     new_0_7_36_1: '新增主题实时自定义，可按界面区域设置背景、透明度、模糊、圆角、边框和阴影 (#3394)',
     new_0_7_36_2: '新增命名主题预设，支持创建、复制、切换、导入和导出，并按账号保存 (#3394)',
     new_0_7_36_3: '统一模型可见性设置在模型选择器中的生效范围，并为大型模型目录增加性能提示 (#3392)',
@@ -3964,15 +4018,5 @@ export default {
     new_0_7_35_6: '修复编程 Agent 通过兼容接口调用模型时的 Token 用量回传，使自动压缩能正确识别上下文用量 (#3334)',
     new_0_7_35_7: '按模型输出上限设置 Anthropic 兼容请求，减少长回复和工具调用被提前截断的问题 (#3334)',
     new_0_7_35_8: '修复 Ekko 自定义 Anthropic 地址的路径拼接，兼容根地址、版本路径和完整消息接口 (#3384)',
-    new_0_7_34_1: '编程 Agent 支持在聊天、群聊和工作流中选择原生模型与推理强度，并记住已选配置 (#3354、#3360)',
-    new_0_7_34_2: '统一模型选择弹窗，按服务商和模型分栏浏览，改善搜索、滚动与小屏显示 (#3355)',
-    new_0_7_34_3: '用量概览新增账号和 Profile 筛选，展示模型与 Agent 用量分布，并改善移动端布局 (#3363)',
-    new_0_7_34_4: '修复费用、Token 和百分比显示精度，以及滚动时间范围内趋势图与汇总数值不一致的问题 (#3373)',
-    new_0_7_34_5: '桌面端新增远程服务器模式，可连接自行部署的 Web UI，无需启动本地服务与内核 (#3366)',
-    new_0_7_34_6: '修复 Agent 卡片的鼠标滚轮切换，并改善列表边缘渐隐效果 (#3351)',
-    new_0_7_34_7: '修复模型输出未闭合的思考标签时，思考内容混入聊天正文的问题 (#3365)',
-    new_0_7_34_8: '修复会话分类子菜单内容过多时无法滚动的问题 (#3374)',
-    new_0_7_34_9: '修复内置 MCP 连接继承无关鉴权 Token 导致的连接问题 (#3359)',
-    new_0_7_34_10: '修复自定义服务商模型发现信息被误报为未知配置，并减少重复警告 (#3375)',
   },
 }
