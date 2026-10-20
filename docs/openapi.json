@@ -3,7 +3,7 @@
   "info": {
     "title": "Ekko Studio API",
     "description": "Ekko Studio API — chat sessions, scheduled jobs, platform channels, model management, skills, memory, logs, file browser, group chat, and terminal.",
-    "version": "0.7.37"
+    "version": "0.7.38"
   },
   "servers": [
     {
@@ -6524,7 +6524,17 @@
                     "type": "string"
                   },
                   "api_mode": {
-                    "type": "string"
+                    "nullable": true,
+                    "type": "string",
+                    "enum": [
+                      "chat_completions",
+                      "codex_responses",
+                      "anthropic_messages",
+                      "bedrock_converse",
+                      "codex_app_server",
+                      null
+                    ],
+                    "description": "Null clears the custom connection protocol override for automatic matching; no api_mode is written to configuration."
                   },
                   "base_url": {
                     "type": "string"
@@ -6603,7 +6613,17 @@
                     "type": "string"
                   },
                   "api_mode": {
-                    "type": "string"
+                    "nullable": true,
+                    "type": "string",
+                    "enum": [
+                      "chat_completions",
+                      "codex_responses",
+                      "anthropic_messages",
+                      "bedrock_converse",
+                      "codex_app_server",
+                      null
+                    ],
+                    "description": "Null clears the custom connection protocol override for automatic matching; no api_mode is written to configuration."
                   },
                   "base_url": {
                     "type": "string"
