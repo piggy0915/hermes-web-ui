@@ -213,6 +213,7 @@ export default {
       "auth_failed": "فشلت مصادقة TypeSafe. تحقق من مفتاح API وصلاحياته.",
       "rate_limited": "تم بلوغ حد طلبات TypeSafe. حاول لاحقًا.",
       "provider_error": "تعذر على TypeSafe معالجة الطلب. تحقق من النموذج وحاول مجددًا.",
+      "endpoint_not_found": "لم يتم العثور على نقطة نهاية JEV (HTTP 404). تحقق من عنوان API الأساسي وتضمين بادئة مسار البوابة.",
       "request_failed": "تعذر الاتصال بـ JEV. تحقق من عنوان API واتصال الشبكة.",
       "settings_failed": "تعذرت قراءة إعدادات JEV أو حفظها. تحقق من مجلد بيانات Studio.",
       "forbidden": "ليس لديك إذن للوصول إلى هذا الملف الشخصي.",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesAr,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: 'المتصفح', settings: 'إعدادات المتصفح', desktopOnly: 'المتصفح المدمج متوفر فقط في Ekko Studio Desktop.', newTab: 'تبويب جديد',
     back: 'رجوع', forward: 'تقدّم', reload: 'إعادة تحميل', stop: 'إيقاف', addressPlaceholder: 'ابحث أو أدخل عنوانًا',
     undoAnnotation: 'التراجع عن الأخير', deleteAnnotation: 'حذف التعليق {index}',

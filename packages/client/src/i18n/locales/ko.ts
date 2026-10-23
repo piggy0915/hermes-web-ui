@@ -213,6 +213,7 @@ export default {
       "auth_failed": "TypeSafe 인증에 실패했습니다. API 키와 권한을 확인하세요.",
       "rate_limited": "TypeSafe 요청 한도에 도달했습니다. 나중에 다시 시도하세요.",
       "provider_error": "TypeSafe가 요청을 처리하지 못했습니다. 모델을 확인한 후 다시 시도하세요.",
+      "endpoint_not_found": "JEV 엔드포인트를 찾을 수 없습니다(HTTP 404). API 기본 URL에 게이트웨이 경로 접두사가 포함되어 있는지 확인하세요.",
       "request_failed": "JEV에 연결할 수 없습니다. API 주소와 네트워크를 확인하세요.",
       "settings_failed": "JEV 설정을 읽거나 저장할 수 없습니다. Studio 데이터 디렉터리를 확인하세요.",
       "forbidden": "이 프로필에 접근할 권한이 없습니다.",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesKo,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Ekko Studio Desktop에서만 사용할 수 있습니다.', newTab: '새 탭',
     back: '뒤로', forward: '앞으로', reload: '새로고침', stop: '중지', addressPlaceholder: '검색 또는 주소 입력',
     undoAnnotation: '마지막 주석 취소', deleteAnnotation: '주석 {index} 삭제',

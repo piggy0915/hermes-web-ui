@@ -213,6 +213,7 @@ export default {
       "auth_failed": "Échec de l’authentification TypeSafe. Vérifiez la clé API et ses autorisations.",
       "rate_limited": "Limite de requêtes TypeSafe atteinte. Réessayez plus tard.",
       "provider_error": "TypeSafe n’a pas pu traiter la requête. Vérifiez le modèle et réessayez.",
+      "endpoint_not_found": "Point de terminaison JEV introuvable (HTTP 404). Vérifiez que l’URL de base de l’API inclut le préfixe de chemin de la passerelle.",
       "request_failed": "Impossible de joindre JEV. Vérifiez l’adresse de l’API et le réseau.",
       "settings_failed": "Impossible de lire ou d’enregistrer les paramètres JEV. Vérifiez le dossier de données Studio.",
       "forbidden": "Vous n’avez pas accès à ce profil.",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesFr,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: 'Navigateur', settings: 'Paramètres du navigateur', desktopOnly: 'Le navigateur intégré est disponible uniquement dans Ekko Studio Desktop.', newTab: 'Nouvel onglet',
     back: 'Précédent', forward: 'Suivant', reload: 'Actualiser', stop: 'Arrêter', addressPlaceholder: 'Rechercher ou saisir une adresse',
     undoAnnotation: 'Annuler la dernière', deleteAnnotation: 'Supprimer l’annotation {index}',

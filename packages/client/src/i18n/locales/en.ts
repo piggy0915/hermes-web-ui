@@ -213,6 +213,7 @@ export default {
       "auth_failed": "TypeSafe authentication failed. Check the API key and its permissions.",
       "rate_limited": "TypeSafe rate limit reached. Try again later.",
       "provider_error": "TypeSafe could not process the request. Check the model and try again.",
+      "endpoint_not_found": "JEV endpoint not found (HTTP 404). Check the API base URL and include any gateway path prefix.",
       "request_failed": "Unable to connect to JEV. Check the API URL and network connection.",
       "settings_failed": "Unable to read or save JEV settings. Check the Studio data directory.",
       "forbidden": "You do not have access to this Profile.",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesEn,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Ekko Studio Desktop.', newTab: 'New Tab',
     back: 'Back', forward: 'Forward', reload: 'Reload', stop: 'Stop', addressPlaceholder: 'Search or enter an address',
     undoAnnotation: 'Undo last', deleteAnnotation: 'Delete annotation {index}',

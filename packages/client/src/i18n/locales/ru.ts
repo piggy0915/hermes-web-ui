@@ -213,6 +213,7 @@ export default {
       "auth_failed": "Ошибка аутентификации TypeSafe. Проверьте ключ API и его разрешения.",
       "rate_limited": "Достигнут лимит запросов TypeSafe. Повторите попытку позже.",
       "provider_error": "TypeSafe не удалось обработать запрос. Проверьте модель и повторите попытку.",
+      "endpoint_not_found": "Конечная точка JEV не найдена (HTTP 404). Проверьте базовый URL API и префикс пути шлюза.",
       "request_failed": "Не удалось подключиться к JEV. Проверьте адрес API и сеть.",
       "settings_failed": "Не удалось прочитать или сохранить настройки JEV. Проверьте каталог данных Studio.",
       "forbidden": "У вас нет доступа к этому профилю.",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesRu,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: 'Браузер', settings: 'Настройки браузера', desktopOnly: 'Встроенный браузер доступен только в Ekko Studio Desktop.', newTab: 'Новая вкладка',
     back: 'Назад', forward: 'Вперёд', reload: 'Обновить', stop: 'Остановить', addressPlaceholder: 'Поиск или адрес',
     undoAnnotation: 'Отменить последнюю', deleteAnnotation: 'Удалить аннотацию {index}',

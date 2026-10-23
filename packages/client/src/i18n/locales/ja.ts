@@ -213,6 +213,7 @@ export default {
       "auth_failed": "TypeSafe の認証に失敗しました。API キーと権限を確認してください。",
       "rate_limited": "TypeSafe のリクエスト制限に達しました。しばらくしてから再試行してください。",
       "provider_error": "TypeSafe がリクエストを処理できませんでした。モデルを確認して再試行してください。",
+      "endpoint_not_found": "JEV エンドポイントが見つかりません（HTTP 404）。API ベース URL にゲートウェイのパス接頭辞が含まれているか確認してください。",
       "request_failed": "JEV に接続できません。API URL とネットワークを確認してください。",
       "settings_failed": "JEV 設定を読み込みまたは保存できません。Studio のデータディレクトリを確認してください。",
       "forbidden": "このプロファイルへのアクセス権がありません。",
@@ -386,6 +387,14 @@ export default {
   },
   socialMessages: socialMessagesJa,
   browser: {
+    remoteOwnerActive: 'Current control device',
+    remoteOwnerStandby: 'Standby — another device is active',
+    remoteOwnerBusy: 'Standby — browser operation in progress',
+    remoteOwnerConnecting: 'Connecting',
+
+    remoteControl: 'Allow remote control',
+    remoteControlStop: 'Stop remote control',
+
     title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Ekko Studio Desktop でのみ利用できます。', newTab: '新しいタブ',
     back: '戻る', forward: '進む', reload: '再読み込み', stop: '停止', addressPlaceholder: '検索またはアドレスを入力',
     undoAnnotation: '直前の注釈を取り消す', deleteAnnotation: '注釈 {index} を削除',
