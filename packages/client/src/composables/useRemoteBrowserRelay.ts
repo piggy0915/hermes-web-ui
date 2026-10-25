@@ -14,9 +14,28 @@ let generation = 0
 let socket: Socket | null = null
 let stopAuth: (() => void) | null = null
 let cancelConnection: (() => void) | null = null
+let resumeTimer: ReturnType<typeof setTimeout> | null = null
+
+// In remote mode the Desktop browser is shared automatically whenever this
+// renderer is logged in; dropped connections are retried in the background.
+const RESUME_DELAY_MS = 5000
+
+/** Connect the Desktop browser relay if possible; never throws and never prompts. */
+export async function ensureRemoteBrowserRelay(): Promise<void> {
+  if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null }
+  const bridge = desktopBridge()
+  if (remoteBrowserEnabled.value || cancelConnection || !bridge?.remoteMode || !bridge.browser?.remoteRequest || !bridge.browser.setRemoteControl || !getApiKey()) return
+  try { await startRemoteBrowserRelay() } catch (error) { console.warn('[desktop-browser] remote control is not connected', error) }
+}
+
+function scheduleResume(): void {
+  if (resumeTimer || !getApiKey()) return
+  resumeTimer = setTimeout(() => { resumeTimer = null; void ensureRemoteBrowserRelay() }, RESUME_DELAY_MS)
+}
 
 export async function stopRemoteBrowserRelay(): Promise<void> {
   generation++
+  if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null }
   remoteBrowserEnabled.value = false
   remoteBrowserOwnerState.value = 'connecting'
   stopGrantState?.(); stopGrantState = null
@@ -39,7 +58,7 @@ export async function startRemoteBrowserRelay(): Promise<void> {
     if (!await bridge.browser.setRemoteControl?.(true)) return
   } catch (error) { await stopRemoteBrowserRelay(); throw error }
   stopGrantState = bridge.browser.onRemoteControlState?.(enabled => {
-    if (!enabled && generation === startedGeneration) void stopRemoteBrowserRelay()
+    if (!enabled && generation === startedGeneration) { void stopRemoteBrowserRelay(); scheduleResume() }
   }) || null
   if (generation !== startedGeneration) { await bridge.browser.setRemoteControl?.(false); return }
   const endpoint = socketEndpoint(getBaseUrlValue(), '/desktop-browser')
@@ -78,7 +97,11 @@ export async function startRemoteBrowserRelay(): Promise<void> {
       if (/remote control has not been authorized|browser permission was revoked/i.test(message) && socket === connection) void stopRemoteBrowserRelay()
     }
   })
-  const stop = () => { if (socket === connection) void stopRemoteBrowserRelay() }
+  const stop = () => {
+    if (socket !== connection) return
+    void stopRemoteBrowserRelay()
+    scheduleResume()
+  }
   connection.on('disconnect', stop)
   connection.on('browser.revoked', stop)
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -109,4 +132,7 @@ export async function startRemoteBrowserRelay(): Promise<void> {
   }
 }
 
-if (typeof window !== 'undefined') window.addEventListener('beforeunload', () => { void stopRemoteBrowserRelay() })
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => { void stopRemoteBrowserRelay() })
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void ensureRemoteBrowserRelay() })
+}

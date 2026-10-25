@@ -15,6 +15,9 @@ export default {
       "all": "All statuses",
       "open": "Incomplete",
       "completed": "Completed",
+      "closed": "Closed",
+      "changeStatus": "Change task status: {title}",
+      "updateFailed": "Could not update task status. Refresh and try again.",
       "openChat": "Open conversation",
       "openTask": "View in conversation: {title}",
       "loading": "Loading tasks",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'Browser', settings: 'Browser Settings', desktopOnly: 'The embedded browser is available only in Ekko Studio Desktop.', newTab: 'New Tab',
     back: 'Back', forward: 'Forward', reload: 'Reload', stop: 'Stop', addressPlaceholder: 'Search or enter an address',

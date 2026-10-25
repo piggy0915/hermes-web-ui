@@ -41,6 +41,9 @@ export default {
       "all": "Tüm durumlar",
       "open": "Tamamlanmadı",
       "completed": "Tamamlandı",
+      "closed": "Kapatıldı",
+      "changeStatus": "Görev durumunu değiştir: {title}",
+      "updateFailed": "Görev durumu güncellenemedi. Yenileyip tekrar deneyin.",
       "openChat": "Sohbeti aç",
       "openTask": "Sohbette görüntüle: {title}",
       "loading": "Görevler yükleniyor",
@@ -340,8 +343,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'Tarayıcı',
     settings: 'Tarayıcı ayarları',

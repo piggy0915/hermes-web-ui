@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { useTheme } from '@/composables/useTheme'
 import { NSpin, NButton, NInput, NPopover, NSelect, useDialog, useMessage } from 'naive-ui'
-import { remoteBrowserOwnerState, remoteBrowserEnabled, startRemoteBrowserRelay, stopRemoteBrowserRelay } from '@/composables/useRemoteBrowserRelay'
-import { useProfilesStore } from '@/stores/hermes/profiles'
+import { remoteBrowserOwnerState, remoteBrowserEnabled } from '@/composables/useRemoteBrowserRelay'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { useI18n } from 'vue-i18n'
@@ -27,19 +26,6 @@ watch(isDark, dark => {
   themeSyncQueue = themeSyncQueue.catch(() => undefined).then(() => bridge.setColorScheme!(dark ? 'dark' : 'light'))
   void themeSyncQueue.catch(error => { console.warn('[desktop-browser] theme sync failed', error) })
 }, { immediate: true })
-const remoteControlAvailable = desktopBridge()?.remoteMode === true && !!bridge?.setRemoteControl
-const relayProfiles = useProfilesStore()
-const remoteControlPending = ref(false)
-watch(() => relayProfiles.activeProfileName, () => { void stopRemoteBrowserRelay() })
-async function toggleRemoteControl(): Promise<void> {
-  if (remoteControlPending.value) return
-  remoteControlPending.value = true
-  try {
-    if (remoteBrowserEnabled.value) await stopRemoteBrowserRelay()
-    else await startRemoteBrowserRelay()
-  } catch (error) { message.error(error instanceof Error ? error.message : String(error)) }
-  finally { remoteControlPending.value = false }
-}
 const EXTERNAL_OVERLAY_SELECTOR = [
   '[data-desktop-browser-overlay]',
   '.n-modal-mask',
@@ -545,10 +531,7 @@ onUnmounted(() => {
             <path d="M20 4v4h-4" />
           </svg>
         </button>
-        <div v-if="remoteControlAvailable" class="remote-control-action">
-          <span v-if="remoteBrowserEnabled && remoteBrowserOwnerState !== 'active'" role="status" data-testid="browser-relay-owner">{{ t(`browser.remoteOwner${remoteBrowserOwnerState[0].toUpperCase()}${remoteBrowserOwnerState.slice(1)}`) }}</span>
-          <NButton size="small" :type="remoteBrowserEnabled ? 'warning' : 'default'" :secondary="remoteBrowserEnabled" :loading="remoteControlPending" :aria-pressed="remoteBrowserEnabled" @click="toggleRemoteControl">{{ t(remoteBrowserEnabled ? 'browser.remoteControlStop' : 'browser.remoteControl') }}</NButton>
-        </div>
+        <span v-if="remoteBrowserEnabled && remoteBrowserOwnerState !== 'active'" class="remote-control-action" role="status" data-testid="browser-relay-owner">{{ t(`browser.remoteOwner${remoteBrowserOwnerState[0].toUpperCase()}${remoteBrowserOwnerState.slice(1)}`) }}</span>
         <NInput v-model:value="address" size="small" :placeholder="t('browser.addressPlaceholder')" :disabled="busy || hasAnnotationSession" @keydown.enter="navigate" />
         <NSelect
           class="profile-switcher"

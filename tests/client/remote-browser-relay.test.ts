@@ -30,7 +30,7 @@ describe('remote browser consent lifecycle', () => {
     await handler({ method: 'snapshot' }, ack)
     expect(fixture.request).toHaveBeenCalledTimes(1)
   })
-  it('revokes on disconnect instead of reconnecting automatically', async () => {
+  it('revokes the grant on disconnect before reconnecting', async () => {
     const relay = await import('../../packages/client/src/composables/useRemoteBrowserRelay')
     await relay.startRemoteBrowserRelay()
     fixture.callbacks.get('disconnect')!()
@@ -121,5 +121,58 @@ describe('native grant invalidation', () => {
     expect(ack).toHaveBeenCalledWith({ error: 'Desktop browser remote control has not been authorized' })
     expect(relay.remoteBrowserEnabled.value).toBe(false)
     await relay.stopRemoteBrowserRelay()
+  })
+})
+
+describe('automatic remote control', () => {
+  beforeEach(() => { vi.resetModules(); fixture.callbacks.clear(); fixture.connected = true; fixture.token = 'account'; fixture.mode = true; fixture.allow = true })
+  afterEach(async () => { const relay = await import('../../packages/client/src/composables/useRemoteBrowserRelay'); await relay.stopRemoteBrowserRelay() })
+
+  it('connects without any user action in remote mode', async () => {
+    const relay = await import('../../packages/client/src/composables/useRemoteBrowserRelay')
+    await relay.ensureRemoteBrowserRelay()
+    expect(relay.remoteBrowserEnabled.value).toBe(true)
+    await relay.ensureRemoteBrowserRelay()
+    expect(relay.remoteBrowserEnabled.value).toBe(true)
+  })
+
+  it('stays off outside remote mode, when logged out or when Desktop declines', async () => {
+    const relay = await import('../../packages/client/src/composables/useRemoteBrowserRelay')
+    fixture.mode = false
+    await relay.ensureRemoteBrowserRelay()
+    expect(fixture.callbacks.size).toBe(0)
+    fixture.mode = true
+    fixture.token = ''
+    await relay.ensureRemoteBrowserRelay()
+    expect(fixture.callbacks.size).toBe(0)
+    fixture.token = 'account'
+    fixture.allow = false
+    await relay.ensureRemoteBrowserRelay()
+    expect(relay.remoteBrowserEnabled.value).toBe(false)
+  })
+
+  it('reconnects after a dropped connection, but not after logout', async () => {
+    vi.useFakeTimers()
+    try {
+      const relay = await import('../../packages/client/src/composables/useRemoteBrowserRelay')
+      await relay.ensureRemoteBrowserRelay()
+      fixture.callbacks.get('disconnect')!()
+      expect(relay.remoteBrowserEnabled.value).toBe(false)
+      fixture.callbacks.clear()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(relay.remoteBrowserEnabled.value).toBe(true)
+      fixture.callbacks.get('disconnect')!()
+      await relay.stopRemoteBrowserRelay()
+      fixture.callbacks.clear()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(fixture.callbacks.size).toBe(0)
+      await relay.ensureRemoteBrowserRelay()
+      fixture.callbacks.get('disconnect')!()
+      fixture.token = ''
+      fixture.callbacks.clear()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(relay.remoteBrowserEnabled.value).toBe(false)
+      expect(fixture.callbacks.size).toBe(0)
+    } finally { vi.useRealTimers() }
   })
 })

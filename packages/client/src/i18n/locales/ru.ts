@@ -15,6 +15,9 @@ export default {
       "all": "Все статусы",
       "open": "Не завершена",
       "completed": "Завершена",
+      "closed": "Закрыта",
+      "changeStatus": "Изменить статус задачи: {title}",
+      "updateFailed": "Не удалось изменить статус задачи. Обновите страницу и повторите попытку.",
       "openChat": "Открыть разговор",
       "openTask": "Показать в разговоре: {title}",
       "loading": "Загрузка задач",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'Браузер', settings: 'Настройки браузера', desktopOnly: 'Встроенный браузер доступен только в Ekko Studio Desktop.', newTab: 'Новая вкладка',
     back: 'Назад', forward: 'Вперёд', reload: 'Обновить', stop: 'Остановить', addressPlaceholder: 'Поиск или адрес',

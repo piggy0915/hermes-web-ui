@@ -15,6 +15,9 @@ export default {
       "all": "全部狀態",
       "open": "未完成",
       "completed": "已完成",
+      "closed": "已關閉",
+      "changeStatus": "修改任務狀態：{title}",
+      "updateFailed": "任務狀態更新失敗，請重新整理後重試",
       "openChat": "開啟對話",
       "openTask": "在對話中查看：{title}",
       "loading": "正在載入任務",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: '待命：浏览器操作正在执行',
     remoteOwnerConnecting: '正在连接',
 
-    remoteControl: '允许远程控制',
-    remoteControlStop: '停止远程控制',
 
     title: '瀏覽器', settings: '瀏覽器設定', desktopOnly: '內建瀏覽器僅在 Ekko Studio 桌面版可用。', newTab: '新分頁',
     back: '上一頁', forward: '下一頁', reload: '重新整理', stop: '停止', addressPlaceholder: '搜尋或輸入網址',

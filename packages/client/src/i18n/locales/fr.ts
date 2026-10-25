@@ -15,6 +15,9 @@ export default {
       "all": "Tous les états",
       "open": "Inachevée",
       "completed": "Terminée",
+      "closed": "Fermée",
+      "changeStatus": "Modifier le statut de la tâche : {title}",
+      "updateFailed": "Impossible de modifier le statut. Actualisez et réessayez.",
       "openChat": "Ouvrir la conversation",
       "openTask": "Voir dans la conversation : {title}",
       "loading": "Chargement des tâches",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'Navigateur', settings: 'Paramètres du navigateur', desktopOnly: 'Le navigateur intégré est disponible uniquement dans Ekko Studio Desktop.', newTab: 'Nouvel onglet',
     back: 'Précédent', forward: 'Suivant', reload: 'Actualiser', stop: 'Arrêter', addressPlaceholder: 'Rechercher ou saisir une adresse',

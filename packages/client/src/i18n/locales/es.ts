@@ -15,6 +15,9 @@ export default {
       "all": "Todos los estados",
       "open": "Pendiente",
       "completed": "Completada",
+      "closed": "Cerrada",
+      "changeStatus": "Cambiar estado de la tarea: {title}",
+      "updateFailed": "No se pudo actualizar el estado. Actualiza e inténtalo de nuevo.",
       "openChat": "Abrir conversación",
       "openTask": "Ver en la conversación: {title}",
       "loading": "Cargando tareas",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'Navegador', settings: 'Ajustes del navegador', desktopOnly: 'El navegador integrado solo está disponible en Ekko Studio Desktop.', newTab: 'Nueva pestaña',
     back: 'Atrás', forward: 'Adelante', reload: 'Recargar', stop: 'Detener', addressPlaceholder: 'Buscar o escribir una dirección',

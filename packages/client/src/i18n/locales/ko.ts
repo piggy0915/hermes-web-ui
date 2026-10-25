@@ -15,6 +15,9 @@ export default {
       "all": "모든 상태",
       "open": "미완료",
       "completed": "완료",
+      "closed": "닫힘",
+      "changeStatus": "작업 상태 변경: {title}",
+      "updateFailed": "작업 상태를 변경하지 못했습니다. 새로고침 후 다시 시도하세요.",
       "openChat": "대화 열기",
       "openTask": "대화에서 보기: {title}",
       "loading": "작업 불러오는 중",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: '브라우저', settings: '브라우저 설정', desktopOnly: '내장 브라우저는 Ekko Studio Desktop에서만 사용할 수 있습니다.', newTab: '새 탭',
     back: '뒤로', forward: '앞으로', reload: '새로고침', stop: '중지', addressPlaceholder: '검색 또는 주소 입력',

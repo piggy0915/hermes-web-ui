@@ -15,6 +15,9 @@ export default {
       "all": "すべての状態",
       "open": "未完了",
       "completed": "完了",
+      "closed": "終了",
+      "changeStatus": "タスクの状態を変更：{title}",
+      "updateFailed": "タスクの状態を更新できませんでした。再読み込みして再試行してください。",
       "openChat": "会話を開く",
       "openTask": "会話で表示：{title}",
       "loading": "タスクを読み込み中",
@@ -414,8 +417,6 @@ export default {
     remoteOwnerBusy: 'Standby — browser operation in progress',
     remoteOwnerConnecting: 'Connecting',
 
-    remoteControl: 'Allow remote control',
-    remoteControlStop: 'Stop remote control',
 
     title: 'ブラウザー', settings: 'ブラウザー設定', desktopOnly: '内蔵ブラウザーは Ekko Studio Desktop でのみ利用できます。', newTab: '新しいタブ',
     back: '戻る', forward: '進む', reload: '再読み込み', stop: '停止', addressPlaceholder: '検索またはアドレスを入力',

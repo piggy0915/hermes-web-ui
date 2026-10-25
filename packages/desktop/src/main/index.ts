@@ -1,3 +1,9 @@
+import './desktop-storage-bootstrap'
+import { activateDeviceWindow } from './device-window-activation'
+import { InstallationCoordinator } from './installation-coordinator'
+import { deviceWindowEndpoint, focusDeviceWindow, ownDeviceWindow } from './device-window-owner'
+import { spawn } from 'node:child_process'
+import { deviceInstanceLaunch, prepareDeviceInstance, DEVICE_INSTANCE_ENV } from './device-instance'
 import { revokesRemoteBrowserGrant } from './browser-remote-navigation'
 import {
   app,
@@ -17,7 +23,7 @@ import {
   type IpcMainInvokeEvent,
   type WebContents,
 } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   getToken,
@@ -66,8 +72,7 @@ import { getOpenAtLogin as readOpenAtLogin, setOpenAtLogin as writeOpenAtLogin, 
 import { PROVIDER_IMPORT_SCHEME, providerImportPayload, providerImportFromArgs, providerImportTarget } from './provider-import'
 
 configureDesktopIdentity(app)
-
-const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
+const PORT = process.env.HERMES_DESKTOP_PORT === '0' ? 0 : Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
 const QUIT_EXISTING = process.argv.includes('--quit')
 const APP_USER_MODEL_ID = 'com.hermeswebui.studio'
@@ -161,7 +166,7 @@ function showWindowWithFade(focus = true) {
   if (process.platform !== 'win32' || mainWindow.isVisible()) {
     mainWindow.setOpacity(1)
     mainWindow.show()
-    if (focus) mainWindow.focus()
+    if (focus) activateDeviceWindow(mainWindow)
     return
   }
 
@@ -169,7 +174,7 @@ function showWindowWithFade(focus = true) {
   const startedAt = Date.now()
   mainWindow.setOpacity(0)
   mainWindow.show()
-  if (focus) mainWindow.focus()
+  if (focus) activateDeviceWindow(mainWindow)
   windowFadeTimer = setInterval(() => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       cancelWindowFade()
@@ -190,6 +195,13 @@ function showMainWindow() {
   }
   if (!mainWindow) return
   showWindowWithFade(true)
+  // Cross-process focus requests can precede the sender closing its owned
+  // confirmation dialog. Activate again after that native focus transfer.
+  const requestedWindow = mainWindow
+  const timer = setTimeout(() => {
+    if (mainWindow === requestedWindow && !requestedWindow.isDestroyed()) activateDeviceWindow(requestedWindow)
+  }, 150)
+  timer.unref?.()
 }
 
 function quitApp() {
@@ -207,6 +219,20 @@ function desktopRemoteDevices(): DesktopRemoteDevices {
     env: process.env,
     checkReady: url => waitForRemoteServerReady(url, remoteReadyTimeoutMs()),
     restart: () => scheduleAppRestart(250),
+    immutableDevice: Boolean(process.env[DEVICE_INSTANCE_ENV]),
+    focusInstance: url => focusDeviceWindow(deviceWindowEndpoint(process.env.EKKO_STUDIO_DEVICE_ROOT || webUiHome(), url)),
+    openInstance: async (serverUrl, devices) => {
+      if (await focusDeviceWindow(deviceWindowEndpoint(process.env.EKKO_STUDIO_DEVICE_ROOT || webUiHome(), serverUrl))) return
+      const launch = deviceInstanceLaunch({ home: webUiHome(), userData: app.getPath('userData'),
+        serverUrl, devices, env: process.env, argv: process.argv, packaged: app.isPackaged })
+      // Let the child HTTP server bind port zero itself (no probe/close race).
+      launch.env.HERMES_DESKTOP_PORT = '0'
+      prepareDeviceInstance(launch)
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, launch.args, { env: launch.env, detached: true, stdio: 'ignore' })
+        child.once('error', reject);child.once('spawn', () => { child.unref();resolve() })
+      })
+    },
   })
 }
 
@@ -405,6 +431,7 @@ function getOpenAtLogin(): boolean {
 }
 
 function setOpenAtLogin(openAtLogin: boolean) {
+  if (process.env[DEVICE_INSTANCE_ENV]) throw new Error('Manage startup from the primary Desktop instance')
   writeOpenAtLogin(app, openAtLogin)
 }
 
@@ -497,6 +524,7 @@ function updateTrayMenu() {
     },
     {
       label: t('tray.checkForUpdates'),
+      enabled: !process.env[DEVICE_INSTANCE_ENV],
       click: () => {
         checkForDesktopUpdates(true).catch(err => {
           console.error('[tray] update check failed:', err)
@@ -1057,6 +1085,7 @@ async function bootstrap(source?: RuntimeDownloadSource) {
       serverUrl = remoteUrl
       updateTrayMenu()
       if (mainWindow) await mainWindow.loadURL(mainRouteUrl() || remoteUrl)
+      if (!START_HIDDEN) showMainWindow()
       await openPendingProviderImport(true)
       await loadPetWindowRoute()
     } catch (err) {
@@ -1109,6 +1138,7 @@ async function bootstrap(source?: RuntimeDownloadSource) {
     serverUrl = url
     updateTrayMenu()
     if (mainWindow) await mainWindow.loadURL(mainRouteUrl() || url)
+    if (!START_HIDDEN) showMainWindow()
     await openPendingProviderImport(true)
     await loadPetWindowRoute()
   } catch (err) {
@@ -1299,10 +1329,12 @@ ipcMain.handle('hermes-desktop:update-cancel', event => {
 })
 ipcMain.handle('hermes-desktop:update-download', event => {
   requireDesktopUpdaterSender(event)
+  if (process.env[DEVICE_INSTANCE_ENV]) throw new Error('Update from the primary Desktop instance')
   return downloadDesktopUpdate()
 })
 ipcMain.handle('hermes-desktop:update-install', event => {
   requireDesktopUpdaterSender(event)
+  if (process.env[DEVICE_INSTANCE_ENV]) throw new Error('Update from the primary Desktop instance')
   return installDesktopUpdate()
 })
 
@@ -1612,7 +1644,19 @@ ipcMain.handle('hermes-desktop:retry-bootstrap', async (_event, source?: Runtime
   await bootstrap(selectedSource)
 })
 
-function runDesktopApp() {
+let installationCoordinator: InstallationCoordinator | null = null
+async function runDesktopApp() {
+  installationCoordinator = new InstallationCoordinator(process.execPath)
+  try { installationCoordinator.register(app.getVersion()) } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'DESKTOP_INSTALLATION_IN_PROGRESS') throw error
+    await app.whenReady()
+    const choice = await dialog.showMessageBox({ type: 'warning', title: 'Ekko Studio',
+      message: t('update.interrupted'), buttons: [t('common.cancel'), t('update.recoverInterrupted')], defaultId: 0, cancelId: 0 })
+    if (choice.response !== 1) { app.quit(); return }
+    installationCoordinator.recoverInterruptedInstall()
+    installationCoordinator.register(app.getVersion())
+  }
+  app.once('will-quit', () => installationCoordinator?.release())
   pendingProviderImport = providerImportFromArgs(process.argv)
   app.on('open-url', (event, url) => {
     const data = providerImportPayload(url)
@@ -1648,12 +1692,21 @@ function runDesktopApp() {
     showMainWindow()
   })
 
+  // Preserve Electron's same-userData delivery of --quit and provider imports.
+  // The device guard additionally deduplicates different userData directories.
+  const releaseDevice = await ownDeviceWindow(
+    deviceWindowEndpoint(process.env.EKKO_STUDIO_DEVICE_ROOT || webUiHome(), activeRemoteServerUrl),
+    () => { if (mainWindow) showMainWindow();else app.once('browser-window-created', () => setTimeout(showMainWindow, 100)) },
+  )
+  if (!releaseDevice) { app.quit();return }
+  app.once('will-quit', releaseDevice)
+
   app.whenReady().then(async () => {
     if (QUIT_EXISTING) {
       quitApp()
       return
     }
-    if (app.isPackaged) {
+    if (app.isPackaged && !process.env[DEVICE_INSTANCE_ENV]) {
       try {
         if (!app.setAsDefaultProtocolClient(PROVIDER_IMPORT_SCHEME)) {
           console.warn('[desktop] provider import protocol registration was unavailable')
@@ -1669,19 +1722,19 @@ function runDesktopApp() {
     // default is fine there.
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
     try {
-      migrateWindowsLoginItem(app, APP_USER_MODEL_ID)
+      if (!process.env[DEVICE_INSTANCE_ENV]) migrateWindowsLoginItem(app, APP_USER_MODEL_ID)
     } catch (error) {
       console.warn('[desktop] failed to migrate the Windows login item:', error)
     }
     try {
-      refreshLinuxLoginItem(app)
+      if (!process.env[DEVICE_INSTANCE_ENV]) refreshLinuxLoginItem(app)
     } catch (error) {
       console.warn('[desktop] failed to refresh the Linux login item:', error)
     }
     installMicrophonePermissionHandler()
     createTray()
     await createWindow()
-    screenshotShortcut.restore(screenshotEnvironment().hideWindows)
+    if (!process.env[DEVICE_INSTANCE_ENV]) screenshotShortcut.restore(screenshotEnvironment().hideWindows)
     void warmScreenshotEditor().catch(error => console.warn('[screenshot] could not preload editor:', error))
     app.once('will-quit', disposeScreenshotOverlays)
     app.once('will-quit', () => screenshotShortcut.dispose())
@@ -1689,7 +1742,14 @@ function runDesktopApp() {
       console.error('[desktop-browser] failed to initialize:', error)
     })
     void bootstrap()
-    initAutoUpdater({
+    if (!process.env[DEVICE_INSTANCE_ENV]) initAutoUpdater({
+      acquireInstall: targetVersion => {
+        if (!installationCoordinator) throw new Error('Desktop installation coordination is unavailable')
+        try { return installationCoordinator.beginInstall(targetVersion) } catch (error) {
+          if (error instanceof Error && error.message === 'DESKTOP_OTHER_DEVICE_WINDOWS_OPEN') throw new Error(t('update.otherDevicesOpen'))
+          throw error
+        }
+      },
       beforeQuitAndInstall: prepareAppShutdown,
       onInstallFailure: async () => {
         await prepareAppShutdown()
@@ -1741,5 +1801,5 @@ if (hermesCliArgs) {
       app.exit(1)
     })
 } else {
-  runDesktopApp()
+  void runDesktopApp().catch(error => { console.error(error); app.quit() })
 }
