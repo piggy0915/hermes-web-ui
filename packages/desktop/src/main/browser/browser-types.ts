@@ -46,6 +46,7 @@ export interface DesktopBrowserProfile {
   rootPath: string
   sessionPath: string
   downloadPath: string
+  lastDownloadDirectory?: string
   proxyMode: BrowserProxyMode
   proxyRules: string
   askBeforeDownload: boolean
@@ -61,6 +62,7 @@ export interface DesktopBrowserDownload {
   fileName: string
   sourceUrl: string
   savePath?: string
+  fileAvailable?: boolean
   receivedBytes: number
   totalBytes: number
   state: 'blocked' | 'progressing' | 'completed' | 'cancelled' | 'interrupted'
