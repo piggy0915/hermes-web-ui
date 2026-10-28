@@ -16,11 +16,13 @@ const props = withDefaults(defineProps<{
   active: boolean
   pinned: boolean
   canDelete: boolean
+  deleteConfirmText?: string
   streaming?: boolean
   completedUnread?: boolean
   selectable?: boolean
   selected?: boolean
   showProfile?: boolean
+  singleLine?: boolean
   categoryLabel?: string
   to?: string
   interceptModifiedNavigation?: boolean
@@ -68,7 +70,8 @@ function onTouchStart(e: TouchEvent) {
   }, 500)
 }
 
-function onTouchEnd() {
+function onTouchEnd(event?: TouchEvent) {
+  if (longPressTriggered.value) event?.preventDefault()
   if (longPressTimer) {
     clearTimeout(longPressTimer)
     longPressTimer = null
@@ -108,7 +111,7 @@ onUnmounted(() => {
   <component
     :is="selectable || !to ? 'button' : 'a'"
     class="session-item"
-    :class="{ active, 'batch-mode': selectable, 'missing-models': profileModelsMissing }"
+    :class="{ active, 'batch-mode': selectable, 'missing-models': profileModelsMissing, 'session-item--single-line': singleLine }"
     :aria-current="active ? 'page' : undefined"
     :href="!selectable ? to : undefined"
     :type="selectable || !to ? 'button' : undefined"
@@ -116,6 +119,7 @@ onUnmounted(() => {
     @contextmenu="emit('contextmenu', $event)"
     @touchstart="onTouchStart"
     @touchend="onTouchEnd"
+    @touchcancel="onTouchEnd"
     @touchmove="onTouchMove"
   >
     <div v-if="selectable" class="session-item-checkbox">
@@ -187,7 +191,7 @@ onUnmounted(() => {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </template>
-      {{ t('chat.deleteSession') }}
+      {{ deleteConfirmText || t('chat.deleteSession') }}
     </NPopconfirm>
   </component>
 </template>
@@ -221,7 +225,8 @@ onUnmounted(() => {
   pointer-events: auto;
 }
 
-.session-item:focus-within .session-item-delete {
+.session-item:focus-visible .session-item-delete,
+.session-item:has(:focus-visible) .session-item-delete {
   opacity: 1;
   pointer-events: auto;
 }
@@ -333,7 +338,7 @@ onUnmounted(() => {
   background: rgba(var(--error-rgb), 0.1);
 }
 
-@media (hover: none) {
+@media (max-width: 768px) and (hover: none) {
   .session-item-delete {
     opacity: 0.5;
     pointer-events: auto;
@@ -398,6 +403,23 @@ onUnmounted(() => {
   min-width: 0;
   margin-top: 3px;
   padding: calc(3px * var(--spacing-scale, 1)) 0;
+}
+
+.session-item--single-line .session-item-content {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--spacing-scale, 1));
+}
+
+.session-item--single-line .session-item-title-row {
+  flex: 1;
+}
+
+.session-item--single-line .session-item-agent-row {
+  order: -1;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 0;
 }
 
 .session-item-agent-logo-wrap {

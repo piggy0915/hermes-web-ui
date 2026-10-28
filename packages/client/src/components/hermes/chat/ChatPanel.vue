@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { agentMetadata, isNativeCodingAgent, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
-import PageSidebar from "@/components/layout/PageSidebar.vue"
-import SidebarResizeHandle from "@/components/layout/SidebarResizeHandle.vue"
+import SessionListSidebar from "./SessionListSidebar.vue"
+import SessionSelectionToolbar from "./SessionSelectionToolbar.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
 import { usePageLoadingTask } from '@/composables/usePageLoading'
 import { useCodingAgentModels } from '@/composables/useCodingAgentModels'
@@ -41,7 +41,6 @@ import {
   NModal,
   NSelect,
   NTooltip,
-  NPopconfirm,
   NPopover,
   useMessage,
   type DropdownOption,
@@ -70,7 +69,6 @@ import { buildVisibleSessionCategoryGroups, partitionRecentSessions } from "./se
 import { buildSessionCategoryMenuChildren, resolveRecentSessionCategoryLabel } from "./session-category-menu";
 import { buildActiveSessionMenuOptions, buildSessionContextMenuOptions } from "./session-menu-options";
 import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
-import PageSidebarFooter from "@/components/layout/PageSidebarFooter.vue";
 import { getStoredUserId, isStoredSuperAdmin } from "@/api/client";
 import { loadNewChatFormPreferences, saveNewChatFormPreferences } from "@/utils/new-chat-form-preferences";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
@@ -1737,7 +1735,17 @@ async function handleDeleteSession(id: string) {
     message.error(t("common.deleteFailed"));
     return;
   }
+  await syncSessionRouteAfterDeletion();
   message.success(t("chat.sessionDeleted"));
+}
+
+async function syncSessionRouteAfterDeletion() {
+  const routeId = router.currentRoute.value.params.sessionId;
+  if (!routeId || chatStore.sessions.some(session => session.id === routeId)) return;
+  await router.replace(chatStore.activeSessionId ? {
+    name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgentSession" : "hermes.session",
+    params: { sessionId: chatStore.activeSessionId },
+  } : { name: chatStore.runtimeMode === "global_agent" ? "hermes.globalAgent" : "hermes.chat" });
 }
 
 function toggleBatchMode() {
@@ -1784,9 +1792,10 @@ async function handleBatchDelete() {
   try {
     const result = await batchDeleteSessions(targets);
     if (result.deleted > 0) {
-      // Remove deleted sessions from local store (without calling API again)
-      // Use loadSessions to refresh from server instead of manual filtering
+      const failedIds = new Set(result.errors.map(error => error.id));
+      for (const target of targets) if (!failedIds.has(target.id)) chatStore.forgetSession(target.id);
       await chatStore.loadSessions(chatStore.sessionProfileFilter);
+      await syncSessionRouteAfterDeletion();
 
       message.success(t("chat.batchDeleteSuccess", { count: result.deleted }));
       if (result.failed > 0) {
@@ -1805,25 +1814,18 @@ async function handleBatchDelete() {
   }
 }
 
-function handleBatchDeleteConfirm() {
-  void handleBatchDelete();
-  return false;
-}
-
 function selectAllSessions() {
   if (isBatchDeleting.value) return;
   selectedSessionKeys.value.clear();
   for (const session of chatStore.sessions) {
-    if (session.id !== chatStore.activeSessionId) {
-      selectedSessionKeys.value.add(sessionSelectionKey(session));
-    }
+    selectedSessionKeys.value.add(sessionSelectionKey(session));
   }
   selectedSessionKeys.value = new Set(selectedSessionKeys.value);
 }
 
 const selectedCount = computed(() => selectedSessionKeys.value.size);
 const canSelectAll = computed(() => {
-  return chatStore.sessions.some(s => s.id !== chatStore.activeSessionId);
+  return chatStore.sessions.length > 0;
 });
 
 const contextSessionId = ref<string | null>(null);
@@ -2493,14 +2495,12 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
 
 <template>
   <div class="chat-panel" :class="{ 'chat-panel--standalone': standalone }">
-    <PageSidebar>
-    <aside
+    <SessionListSidebar
       v-if="hasPageSidebar"
-      class="session-list"
-      :class="{ collapsed: !showSessions, 'session-list--navigation': contentMode !== 'chat' }"
+      :expanded="showSessions"
+      :navigation="contentMode !== 'chat'"
     >
-      <SidebarResizeHandle />
-      <div v-if="showSessions" class="page-sidebar-top">
+      <template #header>
         <PageSidebarNav
           :active="contentMode === 'connections' ? 'connections' : contentMode === 'agents' ? 'agents' : contentMode === 'models' ? 'models' : chatStore.runtimeMode === 'global_agent' ? 'global' : 'chat'"
           :primary-label="t('chat.newChat')"
@@ -2530,77 +2530,18 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             </button>
           </template>
         </PageSidebarNav>
-        <div v-if="contentMode === 'chat' && isBatchMode" class="session-list-toolbar">
-          <span class="session-selection-count" role="status">{{ t('chat.selectedSessions', { count: selectedCount }) }}</span>
-          <div class="session-list-actions">
-            <NButton
-              v-if="isBatchMode"
-              quaternary
-              size="tiny"
-              @click="selectAllSessions"
-              :disabled="!canSelectAll || isBatchDeleting"
-              :title="t('chat.selectAll')"
-              :aria-label="t('chat.selectAll')"
-            >
-              <template #icon>
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path d="M9 11l3 3L22 4" />
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                </svg>
-              </template>
-            </NButton>
-            <NPopconfirm
-              v-if="isBatchMode && selectedCount > 0"
-              v-model:show="showBatchDeleteConfirm"
-              :positive-button-props="{ loading: isBatchDeleting, disabled: isBatchDeleting }"
-              :negative-button-props="{ disabled: isBatchDeleting }"
-              @positive-click="handleBatchDeleteConfirm"
-            >
-              <template #trigger>
-                <NButton quaternary size="tiny" :title="t('common.delete')" :aria-label="t('common.delete')" :loading="isBatchDeleting" :disabled="isBatchDeleting">
-                  <template #icon>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    >
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
-                  </template>
-                </NButton>
-              </template>
-              {{ t('chat.confirmBatchDelete', { count: selectedCount }) }}
-            </NPopconfirm>
-            <NButton
-              v-if="isBatchMode"
-              quaternary
-              size="tiny"
-              @click="toggleBatchMode"
-              :disabled="isBatchDeleting"
-              :title="t('common.cancel')"
-              :aria-label="t('common.cancel')"
-            >
-              <template #icon>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="m18 6-12 12M6 6l12 12" />
-                </svg>
-              </template>
-            </NButton>
-          </div>
-        </div>
-      </div>
-      <div v-if="contentMode === 'chat' && showSessions" class="session-items">
+        <SessionSelectionToolbar
+          v-if="contentMode === 'chat' && isBatchMode"
+          v-model:show-confirm="showBatchDeleteConfirm"
+          :selected-count="selectedCount"
+          :can-select-all="canSelectAll"
+          :deleting="isBatchDeleting"
+          @select-all="selectAllSessions"
+          @delete="handleBatchDelete"
+          @cancel="toggleBatchMode"
+        />
+      </template>
+      <template #default>
         <div
           v-if="chatStore.isLoadingSessions && chatStore.sessions.length === 0"
           class="session-loading"
@@ -2622,10 +2563,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             :session="s"
             :active="s.id === chatStore.activeSessionId"
             :pinned="true"
-            :can-delete="
-              s.id !== chatStore.activeSessionId ||
-              chatStore.sessions.length > 1
-            "
+            can-delete
             :streaming="chatStore.isSessionWorking(s.id)"
             :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
             :selectable="isBatchMode"
@@ -2679,7 +2617,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
               :session="s"
               :active="s.id === chatStore.activeSessionId"
               :pinned="Boolean(s.isPinned)"
-              :can-delete="s.id !== chatStore.activeSessionId || chatStore.sessions.length > 1"
+              can-delete
               :streaming="chatStore.isSessionWorking(s.id)"
               :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
               :selectable="isBatchMode"
@@ -2760,10 +2698,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
               :session="s"
               :active="s.id === chatStore.activeSessionId"
               :pinned="false"
-              :can-delete="
-                s.id !== chatStore.activeSessionId ||
-                chatStore.sessions.length > 1
-              "
+              can-delete
               :streaming="chatStore.isSessionWorking(s.id)"
               :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
               :selectable="isBatchMode"
@@ -2779,10 +2714,8 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             />
           </template>
         </template>
-      </div>
-      <PageSidebarFooter v-if="showSessions" />
-    </aside>
-    </PageSidebar>
+      </template>
+    </SessionListSidebar>
 
     <NDropdown
       :key="contextMenuCategoriesKey"
@@ -3440,54 +3373,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
   background-color: var(--theme-card-bg, $bg-card);
 }
 
-.session-list {
-  position: relative;
-  width: $sidebar-width;
-  min-height: 0;
-  align-self: stretch;
-  margin: 0;
-  background: var(--theme-sidebar-bg, $bg-sidebar-surface);
-  border-inline-end: var(--border-width, 1px) solid $border-color;
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  transition:
-    width $transition-normal,
-    opacity $transition-normal;
-  overflow: hidden;
-
-  &--navigation .page-sidebar-top {
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  &.collapsed {
-    width: 0;
-    margin-inline-start: 0;
-    margin-inline-end: 0;
-    border: none;
-    box-shadow: none;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  @media (max-width: $breakpoint-mobile) {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    height: auto;
-    margin: 0;
-    z-index: 120;
-    width: $sidebar-width;
-
-    &.collapsed {
-      transform: translateX(-100%);
-      opacity: 0;
-    }
-  }
-}
-
 @media (max-width: $breakpoint-mobile) {
   .session-backdrop {
     position: absolute;
@@ -3503,11 +3388,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
       pointer-events: auto;
     }
   }
-}
-
-.page-sidebar-top {
-  flex-shrink: 0;
-  padding: calc(12px * var(--spacing-scale, 1));
 }
 
 .page-sidebar-tabs {
@@ -3551,53 +3431,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
   &:hover {
     background: rgba(var(--accent-primary-rgb), 0.06);
     color: $text-primary;
-  }
-}
-
-.session-list-toolbar {
-  display: flex;
-  align-items: center;
-  gap: calc(8px * var(--spacing-scale, 1));
-  margin-top: 8px;
-  justify-content: space-between;
-}
-
-.session-selection-count {
-  min-width: 0;
-  font-size: calc(var(--font-size-base, 14px) * 12 / 14);
-  color: $text-secondary;
-}
-
-.session-list-actions {
-  display: flex;
-  align-items: center;
-  gap: calc(4px * var(--spacing-scale, 1));
-  height: 22px;
-
-  .n-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 22px;
-    min-height: 22px;
-  }
-}
-
-.session-close-btn {
-  display: inline-flex;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: $text-secondary;
-  padding: calc(4px * var(--spacing-scale, 1));
-  border-radius: $radius-sm;
-  height: 22px;
-  min-height: 22px;
-  align-items: center;
-  justify-content: center;
-
-  &:hover {
-    background: rgba($accent-primary, 0.06);
   }
 }
 
@@ -3864,12 +3697,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
     cursor: default;
     opacity: 0.55;
   }
-}
-
-.session-items {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0 calc(6px * var(--spacing-scale, 1)) calc(12px * var(--spacing-scale, 1));
 }
 
 .session-loading,

@@ -1,3 +1,4 @@
+vi.mock('../../packages/server/src/modules/studio/repositories/person-session-store', () => ({ personSessionIds: (userId: number) => userId === 1 ? ['person-main-1'] : [] }))
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const personDeliveryCurrentMock = vi.hoisted(() => vi.fn(() => true))
@@ -197,7 +198,7 @@ describe('ChatRunSocket clarify responses', { timeout: 15_000 }, () => {
     expect(() => server.requestClarification('mcp-context', 'default', { question: 'Old Q' })).toThrow('expired')
   })
 
-  it('defers background Person decisions during the foreground turn and publishes only to the owner session', async () => {
+  it('defers background Person decisions during the foreground turn and publishes only to owner session and notification rooms', async () => {
     const { ChatRunSocket } = await import('../../packages/server/src/modules/studio/sockets/chat-run')
     const { io, namespace, namespaceEmit } = createSocketHarness()
     const sid = 'person-main-1'
@@ -207,14 +208,16 @@ describe('ChatRunSocket clarify responses', { timeout: 15_000 }, () => {
     const server = new ChatRunSocket(io as any)
     ;(server as any).sessionMap.set(sid, { isWorking: true, events: [] })
     ;(server as any).syncPersonInteraction(1)
-    expect(namespaceEmit.mock.calls.map(call => call[0])).toEqual(['person.updated'])
+    expect(namespaceEmit.mock.calls.map(call => call[0])).toEqual(['person.updated', 'person.updated'])
     ;(server as any).sessionMap.get(sid).isWorking = false
     ;(server as any).syncPersonInteraction(1)
     expect(namespaceEmit).toHaveBeenCalledWith('clarify.requested', expect.objectContaining({ session_id: sid, durable: true }))
-    expect(namespace.to.mock.calls.every(call => call[0] === `session:${sid}`)).toBe(true)
+    expect(namespaceEmit).toHaveBeenCalledWith('person.clarification.requested', expect.objectContaining({ session_id: sid, durable: true }))
+    expect(namespace.to.mock.calls.every(call => [`session:${sid}`, 'person-notifications:1'].includes(call[0]))).toBe(true)
     personInteractionMock.mockReturnValue(undefined)
     ;(server as any).syncPersonInteraction(1)
     expect(namespaceEmit).toHaveBeenCalledWith('clarify.resolved', expect.objectContaining({ clarify_id: 'person-interaction:q:0', resolved: true }))
+    expect(namespaceEmit).toHaveBeenCalledWith('person.clarification.resolved', expect.objectContaining({ clarify_id: 'person-interaction:q:0', resolved: true }))
   })
 
   it('rejects another account reading, running or answering a hidden Person session even on the same Profile', async () => {

@@ -1,17 +1,21 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { initPersonContextTables } from './person-context-schema'
 
-/** Account-owned goals share session_tasks, but do not depend on a chat's lifetime. */
+/** Person goals belong to a conversation; memory and configuration belong to the account. */
 export function initPersonTables(db: DatabaseSync): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_person_goals ON session_tasks(owner_user_id, bot_id, updated_at);
     CREATE TABLE IF NOT EXISTS person_accounts (
       user_id INTEGER PRIMARY KEY, settings_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS person_memories (
-      id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, content TEXT NOT NULL,
-      source TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    CREATE TABLE IF NOT EXISTS person_presence (
+      user_id INTEGER PRIMARY KEY, last_activity_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_person_memories ON person_memories(owner_user_id, updated_at);
+    CREATE TABLE IF NOT EXISTS person_presence_feedback (
+      user_id INTEGER PRIMARY KEY, event_id TEXT NOT NULL, state TEXT NOT NULL,
+      started_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+    );
+    DROP TABLE IF EXISTS person_memories;
     CREATE TABLE IF NOT EXISTS person_executions (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL, owner_user_id INTEGER NOT NULL, requirements_revision INTEGER NOT NULL,
       state TEXT NOT NULL, session_id TEXT NOT NULL, selection_json TEXT NOT NULL,
@@ -20,6 +24,8 @@ export function initPersonTables(db: DatabaseSync): void {
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, occurrence_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_person_runs ON person_executions(owner_user_id, task_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_person_presence_runs ON person_executions(owner_user_id)
+      WHERE state IN ('starting','running','stopping');
     CREATE UNIQUE INDEX IF NOT EXISTS idx_person_active_run ON person_executions(task_id)
       WHERE state IN ('queued','starting','stopping','running','waiting_person','waiting_user','waiting_approval');
     CREATE TABLE IF NOT EXISTS person_interactions (
@@ -62,4 +68,24 @@ export function initPersonTables(db: DatabaseSync): void {
       PRIMARY KEY(session_id, assistant_message_id)
     );
   `)
+  initPersonContextTables(db)
+  // Discard obsolete account-only tasks. There is no implicit reassignment or migration.
+  if (db.prepare('PRAGMA table_info(session_tasks)').all().some(column => column.name === 'session_id')) {
+    const obsolete = db.prepare("SELECT id FROM session_tasks WHERE owner_user_id IS NOT NULL AND bot_id LIKE 'person:%' AND session_id IS NULL").all()
+    for (const task of obsolete) {
+      db.prepare("DELETE FROM person_operations WHERE json_extract(result_json,'$.task.id')=? OR json_extract(result_json,'$.task_id')=?").run(task.id, task.id)
+      db.prepare('DELETE FROM person_occurrences WHERE schedule_id IN (SELECT id FROM person_schedules WHERE task_id=?)').run(task.id)
+      for (const table of ['person_task_returns', 'person_deliveries', 'person_events'])
+        db.prepare(`DELETE FROM ${table} WHERE execution_id IN (SELECT id FROM person_executions WHERE task_id=?)`).run(task.id)
+      for (const table of ['person_interactions', 'person_schedules', 'person_task_origins', 'person_executions'])
+        db.prepare(`DELETE FROM ${table} WHERE task_id=?`).run(task.id)
+      for (const table of ['messages', 'task_plans', 'chat_compression_snapshots', 'run_usage', 'session_uploads', 'workspace_run_change_files', 'workspace_run_changes']) {
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))
+          db.prepare(`DELETE FROM ${table} WHERE session_id=?`).run(`person-task-${task.id}`)
+      }
+      db.prepare('DELETE FROM session_tasks WHERE session_id=?').run(`person-task-${task.id}`)
+      db.prepare('DELETE FROM sessions WHERE id=?').run(`person-task-${task.id}`)
+      db.prepare('DELETE FROM session_tasks WHERE id=?').run(task.id)
+    }
+  }
 }

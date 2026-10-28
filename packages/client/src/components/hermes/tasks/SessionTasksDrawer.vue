@@ -5,12 +5,12 @@ import { useI18n } from 'vue-i18n'
 import { NButton, NDrawer, NDrawerContent, NDropdown, NEmpty, NInput, NPagination, NSpin, useMessage } from 'naive-ui'
 import SessionTaskIcon from '@/components/common/SessionTaskIcon.vue'
 import { fetchSessionTasks, updateSessionTaskStatus, type SessionTaskListItem, type SessionTaskStatus } from '@/api/studio/session-tasks'
-import { personRequest, type PersonTask } from '@/api/person'
+import { personRequest, personTaskCanStop, stopPersonTask, type PersonTask } from '@/api/person'
 import { onPersonUpdated } from '@/api/studio/chat'
 import { useTaskDrawerLayout } from './useTaskDrawerLayout'
 import { chatSessionAgentAvatar } from '@/utils/chat-agent-avatar'
 
-const props = defineProps<{ show: boolean; person?: boolean }>()
+const props = defineProps<{ show: boolean; person?: boolean; personSessionId?: string }>()
 const emit = defineEmits<{ 'update:show': [show: boolean]; 'open-person-task': [task: PersonTask] }>()
 const route = useRoute()
 const router = useRouter()
@@ -95,6 +95,17 @@ async function openSearch() {
   await nextTick()
   searchInput.value?.focus()
 }
+async function stopTask(task: TaskRow) {
+  const person = task.personTask
+  if (!person || !personTaskCanStop(person) || person.execution_state === 'stopping' || savingIds.value.has(task.id)) return
+  savingIds.value = new Set([...savingIds.value, task.id]); requestSequence++
+  try { await stopPersonTask(person) }
+  catch { if (!disposed) message.error(t('sessionTasks.updateFailed')) }
+  finally {
+    if (!disposed && props.show) await load(true)
+    const next = new Set(savingIds.value); next.delete(task.id); savingIds.value = next
+  }
+}
 function handleKeydown(event: KeyboardEvent) {
   if (props.show && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
@@ -116,17 +127,18 @@ function rowStatusOptions(task: TaskRow) {
 function rowStatus(task: TaskRow) {
   const person = task.personTask
   if (!person) return t(`sessionTasks.${task.status}`)
-  const state = person.running ? ['queued','starting','waiting_person','waiting_user','waiting_approval'].includes(person.execution_state) ? person.execution_state : 'running' : person.status
+  const state = person.running ? ['queued','starting','stopping','waiting_person','waiting_user','waiting_approval'].includes(person.execution_state) ? person.execution_state : 'running'
+    : person.status === 'open' && person.execution_state === 'interrupted' ? 'interrupted' : person.status
   return t(`person.states.${state}`)
 }
 function openTask(task: TaskRow) { if (task.personTask) emit('open-person-task', task.personTask) }
 async function loadPersonTasks(query: { search: string; status: string; order: string }) {
-  const result = await personRequest<{ tasks: PersonTask[] }>('/tasks/query', { ...query, limit: 100 })
+  const result = await personRequest<{ tasks: PersonTask[] }>('/tasks/query', { ...query, session_id: props.personSessionId, limit: 100 })
   return { total: result.tasks.length, tasks: result.tasks.map(task => {
     const selection = JSON.parse(task.selection_json || '{}')
     return { id: task.id, title: task.title, summary: task.summary, status: task.status as SessionTaskStatus,
-      updated_at: task.updated_at || Date.now(), message_id: null, session_id: '', session_title: 'Person',
-      profile: selection.profile || 'default', source: selection.runtime === 'ekko' ? 'builtin_agent' : 'coding_agent',
+      updated_at: task.updated_at || Date.now(), message_id: null, session_id: task.session_id, session_title: task.session_title || 'zhezhe',
+      profile: selection.profile || 'default', source: selection.runtime === 'hermes' ? 'api_server' : selection.runtime === 'ekko' ? 'builtin_agent' : 'coding_agent',
       agent: selection.runtime === 'ekko' ? 'ekko-agent' : selection.runtime || 'ekko-agent', personTask: task }
   }) }
 }
@@ -142,7 +154,7 @@ watch(search, () => {
   clearTimeout(searchTimer)
   searchTimer = setTimeout(() => { if (props.show) void updateQuery({ taskSearch: search.value.trim() || undefined }) }, 200)
 })
-watch([() => props.show, () => route.query.taskSearch, () => route.query.taskStatus, () => route.query.taskOrder, () => route.query.taskPage], () => {
+watch([() => props.show, () => props.personSessionId, () => route.query.taskSearch, () => route.query.taskStatus, () => route.query.taskOrder, () => route.query.taskPage], () => {
   requestSequence++
   const value = typeof route.query.taskSearch === 'string' ? route.query.taskSearch : ''
   if (search.value.trim() !== value) search.value = value
@@ -201,6 +213,9 @@ onUnmounted(() => {
               <td class="task-cell">
                 <a class="task-title" :role="task.personTask ? 'button' : undefined" :tabindex="task.personTask ? 0 : undefined" @click="openTask(task)" @keydown.enter="openTask(task)" @keydown.space.prevent="openTask(task)" :href="taskHref(task)" :aria-label="t('sessionTasks.openTask', { title: task.title })">{{ task.title }}</a>
                 <details class="task-description"><summary><span class="description-text">{{ task.summary }}</span><SessionTaskIcon name="chevron-down" :size="13" /></summary></details>
+                <NButton v-if="personTaskCanStop(task.personTask)" class="task-stop" size="tiny" :loading="savingIds.has(task.id)" :disabled="savingIds.has(task.id) || task.personTask?.execution_state === 'stopping'" @click="stopTask(task)">
+                  {{ t(task.personTask?.execution_state === 'stopping' ? 'person.states.stopping' : 'person.stopTask') }}
+                </NButton>
                 <div class="mobile-source">
                   <img :src="taskAvatar(task).src" alt="" />
                   <div class="mobile-source-info">
@@ -242,6 +257,7 @@ onUnmounted(() => {
 .task-list-scroll { flex: 1; min-height: 0; overflow: auto; }
 .task-list { width: 100%; table-layout: fixed; border-collapse: collapse; }
 .task-list--empty { height: 100%; }
+.task-stop { margin-top: 10px; }
 .source-col { width: 25%; }
 .status-col { width: 164px; }
 .time-col { width: 140px; }
