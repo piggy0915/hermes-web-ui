@@ -1,18 +1,22 @@
 import { personError, personRevision, personText } from '../../contracts/person'
 import type { ContentBlock } from '../../contracts/runs/session'
 import type { PersonExecution, PersonTask, PersonTaskOrigin } from '../../contracts/person'
-import { personTaskSessionId } from '../../contracts/person-session'
-import { getPersonTask, personDb, personOperation, personTaskRunning, enqueuePersonExecution, replayPersonOperation, pendingPersonInputs } from '../../repositories/person-store'
-import { createSession, getSession } from '../../repositories/session-store'
+import { getPersonTask, getPersonExecution, taskPersonConversations, personDb, personOperation, personTaskRunning, enqueuePersonExecution, replayPersonOperation, pendingPersonInputs } from '../../repositories/person-store'
+import { getSession } from '../../repositories/session-store'
 import { personUpdated } from '../../repositories/person-updates'
 import { personUser, validatePersonSelection } from './catalog'
 import { savePersonTaskOrigin } from './delivery'
 import { requirePersonSession } from '../../repositories/person-session-store'
+import { personRequirements } from '../../contracts/person-flow'
+import { assertPersonTaskActor } from './task-flow'
+import { assertPersonStage, assertPersonStageTask } from '../../repositories/person-stage-store'
 
 /** Hidden task conversations are account-owned, never shared by Profile. */
 export function ownedPersonTaskSession(userId: number | undefined, sessionId: string) {
   if (userId === undefined || !sessionId.startsWith('person-task-')) throw personError('Session not found', 404)
-  const task = getPersonTask(userId, sessionId.slice('person-task-'.length))
+  const execution = personDb().prepare('SELECT task_id FROM person_executions WHERE owner_user_id=? AND session_id=? LIMIT 1').get(userId, sessionId)
+  if (!execution) throw personError('Session not found', 404)
+  const task = getPersonTask(userId, String(execution.task_id))
   const user = personUser(userId)
   const session = getSession(sessionId)
   if (!session || String(session.studio_user_id) !== String(userId)) throw personError('Session not found', 404)
@@ -20,19 +24,24 @@ export function ownedPersonTaskSession(userId: number | undefined, sessionId: st
   return { task, session }
 }
 
-export async function personTaskChat(userId: number, taskId: string) {
+export async function personTaskChat(userId: number, taskId: string, executionId = '') {
   const task = getPersonTask(userId, taskId)
   const selection = JSON.parse(task.selection_json)
-  const id = personTaskSessionId(taskId)
   const user = personUser(userId)
   if (user.role !== 'super_admin' && !user.profiles.includes(selection.profile || 'default')) throw personError('Resource permission revoked', 403)
-  if (!getSession(id)) createSession({ id, user_id: userId, studio_user_id: userId, title: task.title,
-    source: selection.runtime === 'ekko' ? 'builtin_agent' : selection.runtime === 'hermes' ? 'api_server' : 'coding_agent',
-    agent: selection.runtime === 'ekko' ? 'ekko-agent' : selection.runtime, agent_mode: selection.mode,
-    profile: selection.profile, provider: selection.provider, model: selection.model,
-    reasoning_effort: selection.reasoningEffort, workspace: task.workspace, push_enabled: false })
-  const { session } = ownedPersonTaskSession(userId, id)
-  return { task: { ...getPersonTask(userId, taskId), running: personTaskRunning(taskId) }, session, pending: pendingPersonInputs(userId, taskId) }
+  const selectedId = executionId || task.execution_id
+  const read = (id: string) => personDb().prepare('SELECT id,session_id,state,created_at,occurrence_id FROM person_executions WHERE owner_user_id=? AND task_id=? AND id=?')
+    .get(userId,taskId,id) as unknown as Pick<PersonExecution,'id'|'session_id'|'state'|'created_at'|'occurrence_id'> | undefined
+  const execution = selectedId ? read(selectedId) : null
+  if (selectedId && !execution) throw personError('Execution not found', 404)
+  const session = execution ? ownedPersonTaskSession(userId, execution.session_id).session : null
+  const executions = taskPersonConversations(userId, taskId)
+  // Queued follow-ups can be newer than the active turn in the same conversation.
+  const current = task.execution_id ? read(task.execution_id) : undefined
+  if (current && !executions.some(run => run.id === current.id)) executions.unshift(current)
+  // Include a selected older conversation even when it falls outside the recent page.
+  if (execution && !executions.some(run => run.session_id === execution.session_id)) executions.push(execution)
+  return { task: { ...task, running: personTaskRunning(taskId) }, session, execution: execution || null, executions, pending: pendingPersonInputs(userId, taskId, session?.id) }
 }
 
 function chatInput(value: unknown): ContentBlock[] {
@@ -57,18 +66,32 @@ export async function continuePersonTask(userId: number, taskId: string, body: R
   if (replay !== undefined) return replay
   const input = chatInput(body.input)
   const result = personOperation(userId, key, request, () => {
+    const stage = assertPersonStageTask(userId,taskId)
+    if (origin?.stage) {
+      assertPersonStage(userId,origin.stage,origin.sessionId)
+      if (stage?.stageId !== origin.stage.stageId) throw personError('This stage may only continue its own subtasks',403)
+    }
     const current = getPersonTask(userId, taskId)
+    const requirements = personRequirements(current)
+    if (requirements.flow) {
+      assertPersonTaskActor(current, origin)
+      if (requirements.flow.stopped) throw personError('Flow is stopped; its creator must reopen it', 409)
+      requirements.flow.completed = false
+    }
     requirePersonSession(userId, current.session_id)
     if (current.revision !== personRevision(body.expected_revision)) throw personError('Task changed; query it again', 409)
     if (current.execution_state === 'stopping') throw personError('Task is stopping; wait for acknowledgement', 409)
     if (Object.hasOwn(body, 'expected_execution_id') && body.expected_execution_id !== (current.execution_id || null)) throw personError('Execution changed; query the task again', 409)
     if (current.status === 'closed') throw personError('Reopen the task before continuing', 409)
+    if (requirements.flow) personDb().prepare('UPDATE session_tasks SET requirements_json=? WHERE id=?').run(JSON.stringify(requirements), taskId)
     personDb().prepare("UPDATE session_tasks SET status='open',completion_evidence='',completed_at=NULL,revision=revision+1,updated_at=? WHERE id=?")
       .run(Date.now(), taskId)
     savePersonTaskOrigin(userId, taskId, origin)
     const next = getPersonTask(userId, taskId)
-    const execution = enqueuePersonExecution(next, null, input, true)
-    return { task: { ...getPersonTask(userId, taskId), running: true }, execution, pending: pendingPersonInputs(userId, taskId) }
+    const target = body.execution_id ? getPersonExecution(userId, personText(body.execution_id, 'execution_id', 100)) : undefined
+    if (target && target.task_id !== taskId) throw personError('Execution not found', 404)
+    const execution = enqueuePersonExecution(next, null, input, true, target?.session_id)
+    return { task: { ...getPersonTask(userId, taskId), running: true }, execution, pending: pendingPersonInputs(userId, taskId, execution.session_id) }
   })
   personUpdated(userId)
   return result

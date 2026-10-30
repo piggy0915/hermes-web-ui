@@ -415,12 +415,11 @@ describe('user auth tables and middleware', () => {
     const owner = users.bootstrapDefaultSuperAdmin('admin', '123456')!
     db.prepare("INSERT INTO users(username,password_hash,role,status,created_at,updated_at) VALUES ('other','unused','super_admin','active',1,1)").run()
     const other = users.findUserByUsername('other')!
-    const { createPersonTask } = await import('../../packages/server/src/modules/studio/repositories/person-store')
+    const { createPersonTask, enqueuePersonExecution } = await import('../../packages/server/src/modules/studio/repositories/person-store')
     const { createSession } = await import('../../packages/server/src/modules/studio/repositories/session-store')
     createSession({ id: `person-main-${owner.id}`, user_id: owner.id, studio_user_id: owner.id, source: 'builtin_agent', profile: 'default' })
     const task = createPersonTask(owner.id, 'Owned task', 'Run privately', { runtime: 'ekko', mode: 'scoped', profile: 'default', provider: 'p', model: 'm' }, '/tmp', `person-main-${owner.id}`)
-    const id = `person-task-${task.id}`
-    createSession({ id, user_id: owner.id, studio_user_id: owner.id, source: 'builtin_agent', profile: 'default' })
+    const id = enqueuePersonExecution(task).session_id
     for (const [user, method, suffix, allowed] of [[owner,'GET','',true], [owner,'GET','/context',true], [other,'GET','',false], [owner,'DELETE','',false], [owner,'POST','/messages/batch-delete',false], [owner,'GET','/share-models',false]] as const) {
       const ctx = { path: `/api/studio/sessions/${id}${suffix}`, method, query: {}, request: { body: {} },
         headers: { authorization: `Bearer ${auth.signUserJwt(user, 'test-secret')}` }, state: {}, status: 200, body: null,
@@ -463,6 +462,68 @@ describe('user auth tables and middleware', () => {
     await batchRemove(ctx)
     expect(ctx.body).toMatchObject({ deleted: 0, failed: 1 })
     expect(sessions.getSession(worker)).not.toBeNull()
+  })
+
+  it.each([
+    ['/api/studio/sessions/ordinary-chat/workspace-file/read', { path: 'packages/server/src/bootstrap/person-task-runtime.ts' }],
+    ['/api/studio/group-chat/rooms/ordinary-room/workspace-file/read', { path: 'person-task-notes.txt' }],
+    ['/api/studio/files/download', { path: '/tmp/person-task-results/report.txt' }],
+    ['/api/studio/sessions/search', { q: 'person-main-architecture' }],
+    ['/api/studio/person/conversations', { search: 'person-task-research' }],
+    ['/api/studio/sessions/ordinary-person-main-reference', {}],
+    ['/api/studio/group-chat/rooms/person-task-project', {}],
+    ['/api/studio/workflows', { ids: 'person-main-workflow' }],
+    ['/api/studio/logs/ekko-agent', { text: 'person-task-runtime.ts' }],
+  ])('does not treat ordinary request text as a Person session: %s', async (path, query) => {
+    const { users, auth } = await initUsers()
+    const user = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const ctx = { path, method: 'GET', query, request: { body: {} },
+      headers: { authorization: `Bearer ${auth.signUserJwt(user, 'test-secret')}` },
+      state: {}, status: 200, body: null, get: () => '' } as any
+    const next = vi.fn()
+
+    await auth.requireUserJwt(ctx, next)
+
+    expect(ctx.status).toBe(200)
+    expect(next).toHaveBeenCalledOnce()
+    expect(ctx.state.personSession).toBeUndefined()
+    expect(ctx.state.personTaskRead).toBeUndefined()
+  })
+
+  it.each([
+    ['GET', '/api/studio/sessions/person-main-private', {}, {}],
+    ['GET', '/API/STUDIO/SESSIONS/person-main-private/', {}, {}],
+    ['GET', '/api/studio/sessions/person%2Dmain%2Dprivate', {}, {}],
+    ['GET', '/api/studio/sessions/conversations/person-main-private/messages/paginated', {}, {}],
+    ['GET', '/api/studio/sessions/hermes/person-main-private', {}, {}],
+    ['DELETE', '/api/studio/person/conversations/person-main-private', {}, {}],
+    ['GET', '/api/studio/person', { session_id: 'person-main-private' }, {}],
+    ['GET', '/api/studio/sessions/usage', { ids: 'ordinary,person-main-private' }, {}],
+    ['GET', '/api/studio/logs/ekko-agent', { session: 'person-main-private' }, {}],
+    ['GET', '/api/studio/logs/ekko-agent', { session: 'person-task-private' }, {}],
+    ['POST', '/api/studio/chat-run/runs', {}, { session_id: 'person-main-private' }],
+    ['POST', '/api/studio/chat-run/runs', {}, { parent_session_id: 'person-main-private' }],
+    ['POST', '/api/coding-agents/runs/person-main-private/input', {}, { input: 'continue' }],
+    ['DELETE', '/api/coding-agents/runs/person-main-private', {}, {}],
+    ['POST', '/api/coding-agents/runs/person-task-private/input', {}, { input: 'continue' }],
+    ['DELETE', '/api/coding-agents/runs/person-task-private', {}, {}],
+    ['POST', '/api/studio/sessions/batch-delete', {}, { ids: ['ordinary', 'person-main-private'] }],
+    ['POST', '/api/studio/sessions/batch-delete', {}, { sessions: [], ids: ['person-main-private'] }],
+    ['POST', '/api/studio/sessions/batch-delete', {}, { sessions: [{ id: 'person-main-private', profile: 'default' }] }],
+  ])('keeps private Person references protected in %s %s', async (method, path, query, body) => {
+    const { users, auth } = await initUsers()
+    const user = users.bootstrapDefaultSuperAdmin('admin', '123456')!
+    const { createSession } = await import('../../packages/server/src/modules/studio/repositories/session-store')
+    createSession({ id: 'person-main-private', studio_user_id: user.id + 1, profile: 'default' })
+    const ctx = { path, method, query, request: { body },
+      headers: { authorization: `Bearer ${auth.signUserJwt(user, 'test-secret')}` },
+      state: {}, status: 200, body: null, get: () => '' } as any
+    const next = vi.fn()
+
+    await auth.requireUserJwt(ctx, next)
+
+    expect(ctx.status).toBe(404)
+    expect(next).not.toHaveBeenCalled()
   })
 
   it('authenticates JWTs passed as query tokens for download and websocket URLs', async () => {

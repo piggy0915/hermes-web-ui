@@ -3,7 +3,8 @@ import { agentMetadata, isNativeCodingAgent, isGlobalOnlyCodingAgent } from '@/u
 import SessionListSidebar from "./SessionListSidebar.vue"
 import SessionSelectionToolbar from "./SessionSelectionToolbar.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
-import { usePageLoadingTask } from '@/composables/usePageLoading'
+import { useSessionReadState } from '@/composables/useSessionReadState'
+import { usePageLoadingState, usePageLoadingTask } from '@/composables/usePageLoading'
 import { useCodingAgentModels } from '@/composables/useCodingAgentModels'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import HeaderSidebarToggle from '@/components/layout/HeaderSidebarToggle.vue'
@@ -54,6 +55,7 @@ import StarIcon from "@/components/common/StarIcon.vue";
 import SessionTaskIcon from '@/components/common/SessionTaskIcon.vue';
 import ChatInput from "./ChatInput.vue";
 import NewChatAgentCards from "./NewChatAgentCards.vue";
+import NewChatPage from "./NewChatPage.vue";
 import { prepareAgentDeployment, type AgentDeploymentController } from "./agentDeployment.mjs";
 import RealtimeVoiceStage from "./RealtimeVoiceStage.vue";
 import ConversationMonitorPane from "./ConversationMonitorPane.vue";
@@ -72,6 +74,7 @@ import PageSidebarNav from "@/components/layout/PageSidebarNav.vue";
 import { getStoredUserId, isStoredSuperAdmin } from "@/api/client";
 import { loadNewChatFormPreferences, saveNewChatFormPreferences } from "@/utils/new-chat-form-preferences";
 import { useDefaultWorkspace } from "@/composables/useDefaultWorkspace";
+import { useChatSurfaceReveal } from "@/composables/useChatSurfaceReveal";
 import ModelCascader from "@/components/hermes/models/ModelCascader.vue";
 import { configuredProviderApiMode, canScopedCodingAgentUseProvider, usesServerManagedProviderAuth } from "@/utils/codingAgentProviders";
 import { OPEN_SUBAGENT_STREAM_EVENT, type OpenSubagentStreamDetail } from "@/utils/hermes/subagent-stream";
@@ -106,6 +109,7 @@ const FilePreview = defineAsyncComponent(async () => (await import('@/components
 const DesktopBrowserPanel = defineAsyncComponent(async () => (await import('./DesktopBrowserPanel.vue')).default);
 
 const chatStore = useChatStore();
+const sessionStates = useSessionReadState(() => props.contentMode === 'chat' && !chatStore.isLoadingMessages ? chatStore.activeSessionId : null);
 const appStore = useAppStore();
 const profilesStore = useProfilesStore();
 const filesStore = useFilesStore();
@@ -144,7 +148,7 @@ const chatInputRef = ref<(InstanceType<typeof ChatInput> & {
 }) | null>(null);
 const chatContentWrapperRef = ref<HTMLElement | null>(null);
 const chatMainContentRef = ref<HTMLElement | null>(null);
-let sessionFadeAnimation: Animation | null = null;
+useChatSurfaceReveal(chatMainContentRef, () => chatStore.activeSessionId || 'new-chat', () => !chatStore.isLoadingMessages || chatStore.messages.length > 0);
 let workspacePreviewRequestSeq = 0;
 let workspacePreviewRequestPending = false;
 const chatDropCounter = ref(0);
@@ -540,21 +544,6 @@ watch(
     // composer keeps whatever focus the sidebar click left behind, so the first
     // keystroke goes nowhere.
     chatInputRef.value?.focusComposer?.();
-
-    const surface = chatMainContentRef.value;
-    if (!surface || typeof surface.animate !== "function") return;
-
-    sessionFadeAnimation?.cancel();
-    sessionFadeAnimation = surface.animate(
-      [
-        { opacity: 0 },
-        { opacity: 1 },
-      ],
-      {
-        duration: 1500,
-        easing: "ease",
-      },
-    );
   },
   { flush: "post" },
 );
@@ -570,13 +559,11 @@ onUnmounted(() => {
   window.removeEventListener("resize", updateNewChatCategoryAnchor);
   window.removeEventListener("scroll", updateNewChatCategoryAnchor, true);
   stopToolResize();
-  sessionFadeAnimation?.cancel();
   workspacePreviewRequestSeq += 1;
   if (workspacePreviewRequestPending || previewOnlyFileOpen.value || filesStore.previewFile?.workspaceSessionId) filesStore.closePreview();
   workspacePreviewRequestPending = false;
   previewOnlyFileOpen.value = false;
   toolPanelStore.closeWorkspaceDiff();
-  sessionFadeAnimation = null;
 });
 watch(showToolPanel, async (visible) => {
   if (!visible || isMobile.value) return;
@@ -843,6 +830,13 @@ const headerTitle = computed(() =>
 );
 
 const showNewChatPage = ref(false);
+const pageLoading = usePageLoadingState();
+const isEmptySingleChat = computed(() =>
+  props.contentMode === "chat" && currentMode.value === "chat"
+  && chatStore.runtimeMode === "default" && route.name === "hermes.chat"
+  && !pageLoading.value && chatStore.sessionsLoaded && !chatStore.isLoadingSessions
+  && !chatStore.activeSessionId && chatStore.sessions.length === 0,
+);
 const showNewChatSettings = ref(false);
 const showNewChatCategory = ref(false);
 const newChatCategoryTriggerRef = ref<InstanceType<typeof NButton> | null>(null);
@@ -904,7 +898,7 @@ function closeNewChatPage() {
 }
 
 function cancelNewChatPage() {
-  if (newChatLoading.value) return;
+  if (newChatLoading.value || isEmptySingleChat.value) return;
   closeNewChatPage();
   showToolPanel.value = newChatPreviousToolPanel.value;
 }
@@ -1372,7 +1366,7 @@ async function loadNewChatModels(sequence: number) {
   }
 }
 
-async function openNewChatPage() {
+async function openNewChatPage(options: { preserveSidebar?: boolean } = {}) {
   if (newChatLoading.value) return;
   if (props.contentMode !== "chat") await router.push({ name: "hermes.chat" });
   const previousToolPanel = showNewChatPage.value ? newChatPreviousToolPanel.value : showToolPanel.value;
@@ -1409,7 +1403,7 @@ async function openNewChatPage() {
   newChatModelsLoading.value = !newChatModelCatalogKnown.value;
   if (!saved) syncNewChatModelSelection();
   restoringNewChatForm = false;
-  if (isMobile.value) showSessions.value = false;
+  if (isMobile.value && !options.preserveSidebar) showSessions.value = false;
   showNewChatPage.value = true;
   void initWorkspaceComposable().then(() => {
     if (isCurrentNewChatOptionsLoad(sequence) && !saved && !newChatWorkspace.value) {
@@ -1740,6 +1734,7 @@ async function handleDeleteSession(id: string) {
 }
 
 async function syncSessionRouteAfterDeletion() {
+  if (isMobile.value && !chatStore.activeSessionId && chatStore.sessions.length === 0) showSessions.value = false;
   const routeId = router.currentRoute.value.params.sessionId;
   if (!routeId || chatStore.sessions.some(session => session.id === routeId)) return;
   await router.replace(chatStore.activeSessionId ? {
@@ -2491,6 +2486,12 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
   if (selection.provider === 'moa') void selectSessionMoaPreset(selection.model);
   else void selectSessionModel(selection.model, selection.provider);
 }
+
+// Wait for route cleanup and session loading before opening the empty state;
+// explicit session links may still be resolving outside the sidebar list.
+watch([isEmptySingleChat, () => route.fullPath], ([empty]) => {
+  if (empty && !showNewChatPage.value) void openNewChatPage({ preserveSidebar: true });
+}, { immediate: true, flush: "post" });
 </script>
 
 <template>
@@ -2564,8 +2565,8 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             :active="s.id === chatStore.activeSessionId"
             :pinned="true"
             can-delete
-            :streaming="chatStore.isSessionWorking(s.id)"
-            :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
+            :streaming="sessionStates.isWorking(s.id, chatStore.isSessionWorking(s.id))"
+            :completed-unread="sessionStates.isUnread(s.id, chatStore.isSessionCompletedUnread(s.id))"
             :selectable="isBatchMode"
             :selected="isSessionSelected(s)"
             :show-profile="true"
@@ -2618,8 +2619,8 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
               :active="s.id === chatStore.activeSessionId"
               :pinned="Boolean(s.isPinned)"
               can-delete
-              :streaming="chatStore.isSessionWorking(s.id)"
-              :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
+              :streaming="sessionStates.isWorking(s.id, chatStore.isSessionWorking(s.id))"
+              :completed-unread="sessionStates.isUnread(s.id, chatStore.isSessionCompletedUnread(s.id))"
               :selectable="isBatchMode"
               :selected="isSessionSelected(s)"
               :show-profile="true"
@@ -2699,8 +2700,8 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
               :active="s.id === chatStore.activeSessionId"
               :pinned="false"
               can-delete
-              :streaming="chatStore.isSessionWorking(s.id)"
-              :completed-unread="chatStore.isSessionCompletedUnread(s.id)"
+              :streaming="sessionStates.isWorking(s.id, chatStore.isSessionWorking(s.id))"
+              :completed-unread="sessionStates.isUnread(s.id, chatStore.isSessionCompletedUnread(s.id))"
               :selectable="isBatchMode"
               :selected="isSessionSelected(s)"
               :show-profile="true"
@@ -3109,22 +3110,19 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
             :data-agent-deployment-active="currentMode === 'chat' && !showNewChatPage"
             :data-agent-deployment-status-session="chatStore.activeSessionId || ''"
             :data-agent-deployment-status="chatStore.isLoadingMessages ? 'pending' : chatStore.isRunActive ? 'working' : 'settled'">
-            <section v-if="showNewChatPage" class="new-chat-page" :aria-label="t('chat.newChat')">
-              <div class="new-chat-intro">
-                <h1>{{ t('chat.newChatCardTitle') }}</h1>
-                <p>{{ t('chat.newChatCardSubtitle') }}</p>
-              </div>
-              <NewChatAgentCards :value="newChatAgent" :options="newChatAgentOptions"
-                :loading="newChatAgentLoading" :disabled="newChatLoading || newChatAgentLoading"
-                @update:value="handleNewChatAgentChange" />
-              <div class="new-chat-compose">
+            <NewChatPage v-if="showNewChatPage" :title="t('chat.newChatCardTitle')" :subtitle="t('chat.newChatCardSubtitle')">
+              <template #cards>
+                <NewChatAgentCards :value="newChatAgent" :options="newChatAgentOptions"
+                  :loading="newChatAgentLoading" :disabled="newChatLoading || newChatAgentLoading"
+                  @update:value="handleNewChatAgentChange" />
+              </template>
                 <div class="new-chat-config-bar">
                   <div class="new-chat-config-actions">
                     <NButton quaternary circle size="small" class="new-chat-config-icon" :disabled="newChatLoading" :title="newChatWorkspace || t('chat.workspace')"
                       :aria-label="t('chat.workspace')" :aria-expanded="showWorkspaceModal && workspaceIsDraft" @click="openNewChatWorkspace">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
                     </NButton>
-                    <DshSessionPresetSelect v-if="newChatAgent === 'dsh'" v-model="newChatAgentPreset" v-model:show="showNewChatPresetMode"
+                    <DshSessionPresetSelect v-if="newChatAgent === 'dsh'" :key="newChatComposerRevision" v-model="newChatAgentPreset" v-model:show="showNewChatPresetMode"
                       compact :disabled="newChatLoading" @valid="newChatPresetReady = $event" />
                     <NButton quaternary circle size="small" class="new-chat-config-icon" :disabled="newChatLoading" :title="t('chat.newChatSettings')"
                       :aria-label="t('chat.newChatSettings')" :aria-expanded="showNewChatSettings" @click="showNewChatSettings = true">
@@ -3190,8 +3188,7 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
                 <button v-else-if="newChatMissingCredentials" type="button" class="new-chat-config-hint" @click="showNewChatSettings = true">
                   {{ t('chat.newChatCredentialsHint') }}
                 </button>
-              </div>
-            </section>
+            </NewChatPage>
             <template v-else>
             <MessageList
               ref="messageListRef"
@@ -3516,19 +3513,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
   & + & { margin-top: 16px; padding-top: calc(16px * var(--spacing-scale, 1)); border-top: var(--border-width, 1px) solid $border-light; }
 }
 
-.new-chat-page {
-  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
-  justify-content: center; padding: clamp(12px, 2vh, 24px) 0;
-}
-.new-chat-intro {
-  flex: none; text-align: center; padding: 0 calc(20px * var(--spacing-scale, 1));
-  h1 { margin: 0 0 8px; font-size: clamp(22px, 2.4vw, 30px); font-weight: 600; letter-spacing: -.6px; }
-  p { margin: 0; color: $text-secondary; font-size: calc(var(--font-size-base, 14px) * 13 / 14); }
-}
-.new-chat-page > :deep(.agent-cards) {
-  flex: 1; min-height: 0; max-height: calc(176px * 1.4 + 84px); max-width: 1040px; margin: 8px auto 0;
-}
-.new-chat-compose { flex: none; width: min(760px, calc(100% - 48px)); margin: 12px auto 0; }
 .new-chat-config-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: calc(6px * var(--spacing-scale, 1)) calc(12px * var(--spacing-scale, 1)); margin-bottom: 8px; }
 .new-chat-config-actions { display: flex; justify-content: flex-start; align-items: center; gap: calc(8px * var(--spacing-scale, 1)); max-width: 100%; }
 .new-chat-config-icon { width: 28px; height: 28px; padding: 0; }
@@ -3547,25 +3531,12 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
     &:disabled { cursor: default; opacity: .45; }
   }
 }
-.new-chat-compose :deep(.chat-input-area) { padding: 0; border-top: 0; background: transparent; }
 .new-chat-config-hint { display: block; margin: 10px auto 0; padding: 0; border: 0; background: transparent; color: $text-secondary; font: inherit; font-size: calc(var(--font-size-base, 14px) * 12 / 14); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .workspace-picker-content { display: flex; flex-direction: column; gap: calc(12px * var(--spacing-scale, 1)); max-height: 65vh; overflow-y: auto; }
 .workspace-picker-content :deep(.n-button__content) { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: $breakpoint-mobile) {
-  .new-chat-page { justify-content: flex-start; padding: calc(16px * var(--spacing-scale, 1)) 0; }
-  .new-chat-intro {
-    margin-top: auto;
-    padding: 0 calc(24px * var(--spacing-scale, 1));
-    h1 { margin-bottom: 6px; font-size: clamp(19px, 5.1vw, 24px); line-height: var(--line-height, 1.35); }
-    p { font-size: calc(var(--font-size-base, 14px) * 12 / 14); line-height: var(--line-height, 1.5); }
-  }
-  .new-chat-page > :deep(.agent-cards) { flex: none; max-height: none; }
-  .new-chat-compose { width: calc(100% - 32px); margin-top: 8px; margin-bottom: auto; }
   .new-chat-config-bar { flex-wrap: wrap; gap: calc(6px * var(--spacing-scale, 1)); }
   .new-chat-config-actions { width: 100%; }
-}
-@media (max-width: $breakpoint-mobile) and (max-height: 640px) {
-  .new-chat-page { padding: calc(8px * var(--spacing-scale, 1)) 0; }
 }
 
 .new-chat-field {
@@ -3758,17 +3729,6 @@ function handleSessionModelSelect(selection: { model: string; provider: string }
   flex-direction: column;
   min-width: 0;
   background-color: var(--theme-content-bg, $bg-main-surface);
-  animation: chat-surface-fade-in 1.5s ease both;
-}
-
-@keyframes chat-surface-fade-in {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
 }
 
 .chat-header {

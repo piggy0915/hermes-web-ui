@@ -21,6 +21,16 @@ export interface PersonTaskOrigin {
   sessionId: string
   runId: string
   messages: AgentMessage[]
+  returnExecutionId?: string
+  stage?: import('./person-stage').PersonStageContext
+  /** Host-bound user request; copied into exactly one execution's delivery. */
+  memoryRequest?: PersonTaskMemoryRequest
+}
+export interface PersonTaskMemoryRequest {
+  sessionId: string
+  messageId: number
+  historyRevision: number
+  content: string
 }
 export interface PersonSettings {
   workspace: string
@@ -36,6 +46,7 @@ export interface PersonTask {
   id: string
   session_id: string
   session_title?: string
+  creator_session_id?: string | null
   owner_user_id: number
   bot_id: string
   title: string
@@ -67,7 +78,8 @@ export interface PersonInteraction {
   revision: number; created_at: number
 }
 export interface PersonSchedule {
-  id: string; owner_user_id: number; task_id: string; kind: 'once' | 'cron'; expression: string
+  id: string; owner_user_id: number; mode: 'assistant' | 'worker'; task_id: string | null
+  session_id: string; title: string; goal: string; kind: 'once' | 'cron'; expression: string
   timezone: string; next_at: number; state: 'active' | 'paused' | 'cancelled' | 'exhausted'
   revision: number; misfire: 'skip' | 'run_latest'; created_at: number
 }

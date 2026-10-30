@@ -19443,7 +19443,7 @@
           "Person"
         ],
         "summary": "Create conversations",
-        "description": "Create an account-owned, user-named conversation with a generated session ID. Memory and Agent presets remain shared across the account.",
+        "description": "Create an account-owned, user-named conversation with a generated session ID and a persisted bot_type (defaults to zhezhe). Duplicate BOT names return HTTP 409 with code PERSON_BOT_NAME_EXISTS; concurrent creates are checked in the insertion transaction. Optional model and reasoning_effort apply only to the new conversation. Optional workspace changes the account-shared workspace atomically with creation and requires current expected_revision and idle work. Unknown bot types are rejected. Memory and Agent presets remain shared across the account.",
         "operationId": "conversationCreate",
         "security": [
           {
@@ -19471,7 +19471,45 @@
                   "title": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100
+                    "maxLength": 100,
+                    "description": "BOT name, unique among this account’s Person conversations after trimming, Unicode NFKC normalization and lowercasing."
+                  },
+                  "bot_type": {
+                    "type": "string",
+                    "default": "zhezhe",
+                    "description": "Registered bot appearance, independent of conversation title and Agent runtime."
+                  },
+                  "model": {
+                    "type": "object",
+                    "required": [
+                      "profile",
+                      "provider",
+                      "model"
+                    ],
+                    "properties": {
+                      "profile": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "reasoning_effort": {
+                    "type": "string"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "maxLength": 4000,
+                    "description": "Optional account-shared absolute workspace; empty restores the account private workspace. A change requires expected_revision and idle replies, tasks and deliveries, and commits atomically with BOT creation."
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Current account settings revision, required when workspace changes."
                   }
                 },
                 "required": [
@@ -19569,6 +19607,158 @@
             }
           }
         ]
+      }
+    },
+    "/api/studio/person/flows/apply": {
+      "post": {
+        "tags": [
+          "Person"
+        ],
+        "summary": "Create apply",
+        "description": "Create an ordered flow with session_id (creator), title, goal and stages. No execution preset is required. Stop/resume require flow_id and current expected_revision. Stop cancels stage turns, deliveries and workers; resume requeues the same current role with a new generation. Only an assigned live model turn may prepare completion; the host commits it after saving its final result. Route and creator are immutable.",
+        "operationId": "flowApply",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "create",
+                      "stop",
+                      "resume"
+                    ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "flow_id": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "session_id": {
+                    "type": "string",
+                    "description": "Owning Person conversation ID. Required for new work; continuations preserve the existing task conversation."
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "goal": {
+                    "type": "string",
+                    "maxLength": 8000
+                  },
+                  "stages": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 13,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "session_id",
+                        "goal",
+                        "return_expectation"
+                      ],
+                      "properties": {
+                        "session_id": {
+                          "type": "string",
+                          "description": "Owning Person conversation ID. Required for new work; continuations preserve the existing task conversation."
+                        },
+                        "goal": {
+                          "type": "string",
+                          "maxLength": 8000
+                        },
+                        "return_expectation": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4000
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "action",
+                  "idempotency_key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/studio/person/flows/query": {
+      "post": {
+        "tags": [
+          "Person"
+        ],
+        "summary": "Create query",
+        "description": "List owned flows, optionally filtered by involved conversation, or read one flow_id. Includes ordered stages, original result message references and optional child tasks.",
+        "operationId": "flows",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "flow_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string",
+                    "description": "Owning Person conversation ID. Required for new work; continuations preserve the existing task conversation."
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        }
       }
     },
     "/api/studio/person/interactions/{id}/answer": {
@@ -19719,7 +19909,7 @@
           "Person"
         ],
         "summary": "Create apply",
-        "description": "Studio user login required. Account isolation is enforced by the server. Mutations use current revisions; task and schedule operations require an idempotency key. Worker question answers are delivered through their original interactive runtime.",
+        "description": "Studio user login required. Account isolation is enforced by the server. Mutations use current revisions; task and schedule operations require an idempotency key. Worker question answers are delivered through their original interactive runtime. Delete requires schedule_id and current expected_revision. It removes the schedule and occurrence metadata, stops future triggers and preserves tasks, execution history, running work and result delivery. Exact retries with the same idempotency key return the deletion receipt.",
         "operationId": "schedules",
         "security": [
           {
@@ -19744,6 +19934,26 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "assistant",
+                      "worker"
+                    ],
+                    "description": "Required on create. Assistant uses session_id/title/goal and optional workers; worker uses task_id."
+                  },
+                  "session_id": {
+                    "type": "string",
+                    "description": "Owning Person conversation ID. Required for new work; continuations preserve the existing task conversation."
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "goal": {
+                    "type": "string",
+                    "maxLength": 8000
+                  },
                   "action": {
                     "type": "string",
                     "enum": [
@@ -19751,7 +19961,8 @@
                       "update",
                       "pause",
                       "resume",
-                      "cancel"
+                      "cancel",
+                      "delete"
                     ]
                   },
                   "idempotency_key": {
@@ -19831,6 +20042,12 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "session_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Owned Person conversation ID. Required for model, reasoning_effort or use_global_default changes; these settings are stored only for this session."
+                  },
                   "workspace": {
                     "type": "string",
                     "maxLength": 4000,
@@ -19839,7 +20056,7 @@
                   "agents": {
                     "type": "array",
                     "maxItems": 20,
-                    "description": "Account-shared execution presets; at least one saved preset is required to chat or dispatch tasks",
+                    "description": "Account-shared execution presets; required only for background tasks. Direct chat and dialogue stages need no worker preset.",
                     "items": {
                       "type": "object",
                       "required": [
@@ -19956,6 +20173,56 @@
                 },
                 "required": [
                   "expected_revision"
+                ],
+                "allOf": [
+                  {
+                    "anyOf": [
+                      {
+                        "not": {
+                          "required": [
+                            "model"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "session_id"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "not": {
+                          "required": [
+                            "reasoning_effort"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "session_id"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "not": {
+                          "required": [
+                            "use_global_default"
+                          ]
+                        }
+                      },
+                      {
+                        "required": [
+                          "session_id"
+                        ]
+                      }
+                    ]
+                  }
                 ]
               }
             }
@@ -20132,7 +20399,7 @@
           "Person"
         ],
         "summary": "Get chat",
-        "description": "Open the account-owned hidden task conversation. Returns task and session metadata for standard socket resume. It stays excluded from ordinary session lists. Read-only history is permitted to its owner; direct run, abort and other session mutations remain forbidden.",
+        "description": "Open the selected account-owned execution conversation. Each fresh task start and scheduled occurrence has an independent session. Returns recent executions, task and session metadata for standard socket resume. It stays excluded from ordinary session lists. Read-only history is permitted to its owner; direct run, abort and other session mutations remain forbidden.",
         "operationId": "taskChat",
         "security": [
           {
@@ -20158,6 +20425,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "execution_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Select an owned execution conversation; omitted selects the current execution. Returns null session before the first run."
           }
         ]
       },
@@ -20166,7 +20441,7 @@
           "Person"
         ],
         "summary": "Create chat",
-        "description": "Continue a non-closed task in its existing hidden worker session. Running work queues follow-ups durably in FIFO order; completed tasks reopen. Stopping, stale revisions and a full queue return 409. Results return to the task-owning Person conversation, including cross-conversation instructions.",
+        "description": "Continue a non-closed task in the conversation selected by execution_id, or the current execution when omitted. Background schedules start fresh conversations; follow-ups retain the selected conversation. Running work queues follow-ups durably in FIFO order; completed tasks reopen. Stopping, stale revisions and a full queue return 409. Results return to the task-owning Person conversation, including cross-conversation instructions.",
         "operationId": "taskContinue",
         "security": [
           {
@@ -20201,6 +20476,15 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "execution_id": {
+                    "type": "string",
+                    "description": "Execution whose conversation receives this follow-up; defaults to current."
+                  },
+                  "expected_execution_id": {
+                    "type": "string",
+                    "nullable": true,
+                    "description": "Current task execution ID for concurrency checks."
+                  },
                   "input": {
                     "type": "array",
                     "minItems": 1,

@@ -2,8 +2,17 @@ import { personError } from '../contracts/person'
 import { ownsPersonSession } from '../contracts/person-session'
 import { getSession } from './session-store'
 import { personDb } from './person-store'
+import { personBotNameKey } from '../../../../../shared/person-bots'
 
 const deleting = new Set<string>()
+
+export function assertPersonBotNameAvailable(userId: number, name: string) {
+  const key = personBotNameKey(name)
+  const names = personDb().prepare("SELECT title FROM sessions WHERE CAST(studio_user_id AS TEXT)=? AND id LIKE 'person-main-%'").all(String(userId))
+  if (names.some(row => personBotNameKey(String(row.title || '')) === key)) {
+    throw Object.assign(personError('A BOT with this name already exists', 409), { code: 'PERSON_BOT_NAME_EXISTS' })
+  }
+}
 
 export function requirePersonSession(userId: number, sessionId: string) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) throw personError('Person conversation is required')
@@ -34,4 +43,10 @@ export function beginPersonSessionDeletion(userId: number, sessionId: string) {
 
 export function personSessionIds(userId: number): string[] {
   return personDb().prepare("SELECT id FROM sessions WHERE CAST(studio_user_id AS TEXT)=? AND id LIKE 'person-main-%'").all(String(userId)).map(row => String(row.id))
+}
+
+/** Full prompt directory, independent of search pagination and message history. */
+export function personSessionDirectory(userId: number) {
+  return personDb().prepare("SELECT id,title FROM sessions WHERE CAST(studio_user_id AS TEXT)=? AND id LIKE 'person-main-%' ORDER BY id")
+    .all(String(userId)).filter(row => !deleting.has(String(row.id))) as Array<{ id: string; title: string | null }>
 }
