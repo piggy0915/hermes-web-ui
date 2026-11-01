@@ -15,7 +15,7 @@ async function setup(page: Page, mode: 'light' | 'dark', wallpaper = true, custo
   await page.route('**/api/theme/background?*', route => route.request().method() === 'GET'
     ? route.fulfill({ contentType: 'image/png', body: image }) : route.fallback())
   const globalModel = { model: 'global-model', provider: 'provider', profile: 'default' }
-  const state: any = { settings: { workspace: '', model: globalModel, reasoningEffort: 'low', timezone: 'UTC', compressionThreshold: null, maxSteps: 12, maxConcurrentTasks: 6, agents: [{ id: 'worker', name: 'Research assistant', description: 'Research and write reports', selection: { runtime: 'ekko', mode: 'scoped', profile: 'default', provider: 'provider', model: 'global-model', reasoningEffort: '' } }] }, contextTokens: 200000, compression: { enabled: true, threshold: 0.5, globalThreshold: 0.5 }, inherits_global_model: true, reasoning_efforts: ['none', 'low', 'high'], revision: 0, busy: false, history_revision: 0, can_clear: false, tasks: [{ id: 'task1', title: 'Check report', summary: 'Verify a report', status: 'open', revision: 0, execution_id: 'execution1', execution_state: 'running', running: true }], schedules: [], memories: [], interactions: [] }
+  const state: any = { settings: { workspace: '', model: globalModel, reasoningEffort: 'low', timezone: 'UTC', compressionThreshold: null, maxSteps: 12, maxConcurrentTasks: 6, taskTimeoutMinutes: 60, agents: [{ id: 'worker', name: 'Research assistant', description: 'Research and write reports', selection: { runtime: 'ekko', mode: 'scoped', profile: 'default', provider: 'provider', model: 'global-model', reasoningEffort: '' } }] }, contextTokens: 200000, compression: { enabled: true, threshold: 0.5, globalThreshold: 0.5 }, inherits_global_model: true, reasoning_efforts: ['none', 'low', 'high'], revision: 0, busy: false, history_revision: 0, can_clear: false, tasks: [{ id: 'task1', title: 'Check report', summary: 'Verify a report', status: 'open', revision: 0, execution_id: 'execution1', execution_state: 'running', running: true }], schedules: [], memories: [], interactions: [] }
   state.session = { id: 'person-main-1', source: 'builtin_agent', agent: 'ekko-agent', agent_preset: 'person', agent_mode: 'scoped', profile: 'default', title: 'Person', workspace: '/tmp/person/default', model: 'global-model', provider: 'provider', started_at: 1, ended_at: null, message_count: 0, tool_call_count: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, billing_provider: null, estimated_cost_usd: 0, actual_cost_usd: null, cost_status: '' }
   state.conversations = [state.session]
   state.conversationMessages = {}
@@ -55,11 +55,8 @@ async function setup(page: Page, mode: 'light' | 'dark', wallpaper = true, custo
         if (state.failCreate) return route.fulfill({ status: 503, json: { error: 'Creation unavailable' } })
         if (state.conflictingBotName === body.title || state.conversations.some((session: any) => personBotNameKey(session.title) === personBotNameKey(body.title)))
           return route.fulfill({ status: 409, json: { error: 'A BOT with this name already exists', code: 'PERSON_BOT_NAME_EXISTS' } })
-        if (body.workspace !== undefined) {
-          state.settings.workspace = body.workspace
-          for (const session of state.conversations) session.workspace = body.workspace || '/tmp/person/default'
-        }
-        const session = { ...state.session, id: `person-main-new-${operations.length}`, title: body.title, bot_type: body.bot_type || 'zhezhe', workspace: state.settings.workspace || '/tmp/person/default', ...(body.model ? { model: body.model.model, provider: body.model.provider } : {}), history_revision: 0 }
+        if (!body.workspace) return route.fulfill({ status: 400, json: { error: 'Choose a workspace directory for this Bot', code: 'BOT_WORKSPACE_REQUIRED' } })
+        const session = { ...state.session, id: `person-main-new-${operations.length}`, title: body.title, bot_type: body.bot_type || 'zhezhe', workspace: body.workspace, ...(body.model ? { model: body.model.model, provider: body.model.provider } : {}), history_revision: 0 }
         state.conversations.unshift(session)
         await page.evaluate(sessionId => {
           (window as any).__PW_CHAT_SOCKET_RESUMES__[sessionId] = { session_id: sessionId, messages: [], isWorking: false, events: [] }
@@ -78,12 +75,18 @@ async function setup(page: Page, mode: 'light' | 'dark', wallpaper = true, custo
       await state.afterDelete?.()
       return route.fulfill({ json: { deleted: true, session_id: id } })
     }
-    if (path.endsWith('/capabilities')) return route.fulfill({ json: { agents: [{ runtime: 'ekko', installed: true }, { runtime: 'codex', installed: true }], native_allowed: true } })
-    if (path.endsWith('/models') || path.endsWith('/agent-models')) return route.fulfill({ json: { groups: [{ provider: 'provider', profile: 'default', label: 'My provider', models: ['global-model', 'fast-model'], model_meta: { 'global-model': { reasoning_efforts: ['none', 'low', 'high'] }, 'fast-model': { reasoning: false } } }] } })
+    if (path.endsWith('/capabilities')) return route.fulfill({ json: { agents: [{ runtime: 'ekko', installed: true }, { runtime: 'codex', installed: true }, { runtime: 'claude-code', installed: true }], native_allowed: true } })
+    if (path.endsWith('/models') || path.endsWith('/agent-models')) return route.fulfill({ json: { groups: state.modelGroups || [{ provider: 'provider', profile: 'default', label: 'My provider', models: ['global-model', 'fast-model'], model_meta: { 'global-model': { reasoning_efforts: ['none', 'low', 'high'] }, 'fast-model': { reasoning: false } } }] } })
     if (path.endsWith('/settings')) {
       if (body.expected_revision !== state.revision) return route.fulfill({ status: 409, json: { error: 'Settings changed' } })
-      for (const key of ['compressionThreshold', 'maxSteps', 'maxConcurrentTasks', 'timezone']) if (body[key] !== undefined) state.settings[key] = body[key]
-      if (body.workspace !== undefined) { state.settings.workspace = body.workspace; state.session.workspace = body.workspace || '/tmp/person/default' }
+      for (const key of ['compressionThreshold', 'maxSteps', 'maxConcurrentTasks', 'taskTimeoutMinutes', 'timezone']) if (body[key] !== undefined) state.settings[key] = body[key]
+      if (body.workspace !== undefined) {
+        if (body.workspace === state.unavailableWorkspace) return route.fulfill({ status: 409, json: { error: 'Workspace directory is unavailable', code: 'WORKSPACE_UNAVAILABLE' } })
+        const target = state.conversations.find((session: any) => session.id === body.session_id)
+        if (!target) return route.fulfill({ status: 404, json: { error: 'Conversation not found' } })
+        target.workspace = body.workspace
+        if (target.id === state.session.id) state.settings.workspace = body.workspace
+      }
       if (body.agents) state.settings.agents = body.agents
       if (body.model) { state.settings.model = body.model; state.inherits_global_model = false; state.reasoning_efforts = []; state.settings.reasoningEffort = '' }
       if (body.reasoning_effort !== undefined) state.settings.reasoningEffort = body.reasoning_effort
@@ -173,9 +176,50 @@ async function setup(page: Page, mode: 'light' | 'dark', wallpaper = true, custo
     state.can_clear = !state.busy && !state.tasks.some((task: any) => task.running)
     state.session.model = state.settings.model?.model || ''; state.session.provider = state.settings.model?.provider || ''; state.session.reasoning_effort = state.settings.reasoningEffort
     if (path.endsWith('/tasks/query')) return route.fulfill({ json: { tasks: state.tasks.filter((task: any) => !body.session_id || (task.session_id || state.session.id) === body.session_id) } })
-    return route.fulfill({ json: { ...state, session: selected, tasks: state.tasks.filter((task: any) => selected && (task.session_id || state.session.id) === selected.id), schedules: state.schedules.filter((schedule: any) => schedule.session_id === selected?.id || state.tasks.some((task: any) => task.id === schedule.task_id && (task.session_id || state.session.id) === selected?.id)) } })
+    return route.fulfill({ json: { ...state, settings: { ...state.settings, workspace: selected?.workspace || '' }, session: selected, tasks: state.tasks.filter((task: any) => selected && (task.session_id || state.session.id) === selected.id), schedules: state.schedules.filter((schedule: any) => schedule.session_id === selected?.id || state.tasks.some((task: any) => task.id === schedule.task_id && (task.session_id || state.session.id) === selected?.id)) } })
   })
   return { state, operations }
+}
+
+async function chooseBotWorkspace(page: Page, path = '/workspace/selected-bot') {
+  await page.locator('.new-chat-page').getByRole('button', { name: /^(Workspace|工作区)$/ }).click()
+  const picker = page.getByRole('dialog')
+  await picker.locator('.folder-path-input input').fill(path)
+  await picker.getByRole('button', { name: /^(OK|确定)$/ }).click()
+  await expect(picker).toBeHidden()
+}
+
+for (const mode of ['light', 'dark'] as const) {
+  test(`Bot workspace changes are scoped and directory errors retain the selected binding in ${mode}`, async ({ page }, testInfo) => {
+    const { state, operations } = await setup(page, mode)
+    const other = { ...state.session, id: 'person-main-other', title: 'Other BOT', workspace: '/workspace/other-bot' }
+    state.conversations.push(other)
+    state.tasks[0].workspace = '/workspace/pinned-task'
+    state.unavailableWorkspace = '/workspace/unavailable'
+    if (mode === 'dark') await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/#/person')
+    await expect(page.locator('.person-title')).toHaveText('Person', { timeout: 15000 })
+    const workspace = page.getByRole('button', { name: 'Workspace', exact: true })
+    // An existing worker retains its pinned root while the Bot default is edited.
+    await expect(workspace).toBeEnabled()
+    await workspace.click()
+    const picker = page.getByRole('dialog')
+    await picker.locator('.folder-path-input input').fill(state.unavailableWorkspace)
+    await picker.getByRole('button', { name: 'OK', exact: true }).click()
+    await expect(picker).toBeVisible()
+    expect(state.session.workspace).toBe('/tmp/person/default')
+    await picker.locator('.folder-path-input input').fill('/workspace/changed-bot')
+    await picker.getByRole('button', { name: 'OK', exact: true }).click()
+    await expect(picker).toBeHidden()
+    expect(operations.filter(op => op.path.endsWith('/settings')).at(-1).body).toMatchObject({ session_id: 'person-main-1', workspace: '/workspace/changed-bot' })
+    expect(other.workspace).toBe('/workspace/other-bot')
+    expect(state.tasks[0].workspace).toBe('/workspace/pinned-task')
+    await page.goto('/#/person?session=person-main-other')
+    await workspace.click()
+    await expect(picker.locator('.folder-path-input input')).toHaveValue('/workspace/other-bot')
+    await picker.screenshot({ path: testInfo.outputPath('bot-workspace-picker.png'), animations: 'disabled' })
+    await picker.getByRole('button', { name: 'Cancel', exact: true }).click()
+  })
 }
 
 async function setupTaskRemoval(page: Page, mode: 'light' | 'dark' = 'light') {
@@ -241,7 +285,7 @@ test('task queue removal blocks duplicate actions while the request is pending',
   await expect.poll(() => attempts().length).toBe(1)
   await expect(drawer.locator('.task-chat-queue')).toHaveAttribute('aria-busy', 'true')
   for (const button of await removes.all()) await expect(button).toBeDisabled()
-  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toBeDisabled()
+  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
   await page.screenshot({ path: test.info().outputPath('task-queue-removal-pending.png'), animations: 'disabled' })
   await removes.nth(1).evaluate((button: HTMLButtonElement) => button.click())
   expect(attempts()).toHaveLength(1)
@@ -487,7 +531,7 @@ for (const { mode, width, wallpaper } of [
     await page.goto('/#/person?session=person-main-1')
     await expect(page.locator('.person-compose .input-textarea')).toBeVisible()
     await page.locator('.person-compose .input-textarea').fill('Keep this main draft')
-    await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toBeEnabled()
     const panelToggle = page.getByRole('button', { name: 'Side panel', exact: true })
     await expect(panelToggle).toHaveAttribute('aria-expanded', 'false')
     await page.screenshot({ path: testInfo.outputPath('person-shared-side-panel-button.png'), animations: 'disabled' })
@@ -730,6 +774,7 @@ test('Person session models and efforts stay independent across switching, refre
   await page.goto('/#/person?session=person-main-1')
   await page.locator('.input-model-button').click()
   await page.locator('.model-cascader:visible').getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(page.locator('.input-model-button')).toHaveAttribute('aria-label', 'fast-model')
   await switchPersonSession(page, second.id)
   await expect(page.locator('.input-model-button')).toHaveAttribute('aria-label', 'global-model')
@@ -1209,7 +1254,16 @@ for (const mode of ['light', 'dark'] as const) {
   test(`Person background-task island follows wallpaper, regional and reset themes in ${mode}`, async ({ page }) => {
     await setup(page, mode, true, false)
     const island = page.locator('.person-task-island')
-    async function open() { await page.goto('/#/person'); await backgroundTaskCount(page, 2); await expect(island).toBeVisible() }
+    async function open() {
+      await page.goto('/#/person')
+      await backgroundTaskCount(page, 2)
+      const toggle = island.locator('.person-task-island__toggle')
+      await toggle.focus()
+      await page.keyboard.press('Enter')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      await expect(toggle).toHaveCSS('outline-style', 'none')
+      await expect(toggle.locator('.person-task-island__chevron')).toHaveCSS('outline-style', 'solid')
+    }
     const wallpaper = mode === 'light' ? 'rgba(255, 255, 255, 0.72)' : 'rgba(42, 42, 42, 0.72)'
     await open()
     await expect(island).toHaveCSS('background-color', wallpaper)
@@ -1259,6 +1313,116 @@ test('Person background-task island supports reduced motion and hides for main-c
   await expect(island).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('.activity-details')).toBeVisible()
 })
+
+for (const mode of ['light', 'dark'] as const) {
+  test(`Person single-run time limit saves minutes and unlimited in ${mode}`, async ({ page }, testInfo) => {
+    const { operations } = await setup(page, mode, mode === 'light')
+    await page.setViewportSize({ width: mode === 'dark' ? 390 : 1440, height: 900 })
+    await page.goto('/#/person')
+    const open = async () => page.locator('.person-header-actions').getByRole('button', { name: 'Settings', exact: true }).click()
+    await open()
+    const panel = page.locator('.person-general-settings')
+    const limit = panel.getByRole('textbox', { name: 'Single-run time limit (minutes)', exact: true })
+    const save = panel.getByRole('button', { name: 'Save', exact: true })
+    await expect(limit).toHaveValue('60')
+    await expect(panel).toContainText('Use -1 for no time limit')
+    for (const invalid of ['', '0']) {
+      await limit.fill(invalid)
+      await limit.press('Tab')
+      await expect(save).toBeDisabled()
+    }
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(limit).toHaveValue('60')
+    for (const minutes of [90, -1]) {
+      await limit.fill(String(minutes))
+      await page.getByRole('tab', { name: /^Agents/ }).click()
+      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await expect(limit).toHaveValue(String(minutes))
+      await save.click()
+      await expect(panel.getByRole('status')).toHaveText('Settings saved')
+      expect(operations.filter(op => op.path.endsWith('/settings')).at(-1).body).toMatchObject({ taskTimeoutMinutes: minutes })
+      await page.reload()
+      await open()
+      await expect(limit).toHaveValue(String(minutes))
+    }
+    await limit.scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`person-time-limit-${mode}.png`), animations: 'disabled' })
+  })
+}
+
+for (const [mode, wallpaper, width] of [['light', false, 1440], ['dark', false, 1440], ['light', true, 390], ['dark', true, 390]] as const) {
+  test(`Person capsule keeps keyboard focus local in ${mode} wallpaper=${wallpaper} at ${width}px`, async ({ page }, testInfo) => {
+    const { state } = await setup(page, mode, wallpaper)
+    state.tasks = Array.from({ length: 14 }, (_, index) => ({ ...state.tasks[0], id: `focus-${index}`, title: `Keyboard task ${index + 1}` }))
+    state.flows = [{ id: 'keyboard-flow', creator_session_id: state.session.id, title: 'Keyboard collaboration', goal: '', state: 'active', current_position: 0, revision: 0, error: '',
+      stages: [{ id: 'keyboard-stage', position: 0, group_position: 0, session_id: state.session.id, session_title: 'Creator', bot_type: 'zhezhe', goal: 'Check keyboard navigation', state: 'active', result_message_id: null, tasks: [] }] }]
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto('/#/person')
+    await backgroundTaskCount(page, state.tasks.length)
+    const island = page.locator('.person-task-island')
+    const toggle = island.locator('.person-task-island__toggle')
+    const chevron = toggle.locator('.person-task-island__chevron')
+    async function expectDisclosureFocus() {
+      await expect(toggle).toBeFocused()
+      await expect(toggle).toHaveCSS('outline-style', 'none')
+      await expect(chevron).toHaveCSS('outline-style', 'solid')
+      await expect(chevron).toHaveCSS('outline-width', '2px')
+    }
+    // Enter through the real Tab order, including when the details are inert.
+    await toggle.focus()
+    await page.keyboard.press('Shift+Tab')
+    await page.keyboard.press('Tab')
+    await expectDisclosureFocus()
+    await page.keyboard.press('Tab')
+    await expect(page.locator('.person-compose textarea')).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expectDisclosureFocus()
+    await island.screenshot({ path: testInfo.outputPath('expanded-keyboard-focus.png'), animations: 'disabled' })
+    await page.keyboard.press('Space')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await page.keyboard.press('Space')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    // Tabbing through overflowing content must scroll each focused action into view.
+    for (const row of await island.locator('.activity-row').all()) {
+      await page.keyboard.press('Tab')
+      await expect(row).toBeFocused()
+      await expect(row).toBeInViewport()
+      await expect(row).toHaveCSS('outline-style', 'solid')
+      await expect(chevron).toHaveCSS('outline-style', 'none')
+    }
+    const details = island.locator('.activity-details')
+    expect(await details.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    const preview = island.locator('.flow-preview-toggle')
+    await page.keyboard.press('Tab')
+    await expect(preview).toBeFocused()
+    await expect(preview).toHaveCSS('outline-style', 'solid')
+    await page.keyboard.press('Tab')
+    const bot = island.locator('.bot-sprite')
+    await expect(bot).toBeFocused()
+    await expect(bot).toHaveCSS('outline-style', 'solid')
+    await page.keyboard.press('Enter')
+    const drawer = page.locator('.person-workspace-drawer')
+    await expect(drawer.getByRole('button', { name: 'Keyboard collaboration', exact: true })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(drawer).not.toBeVisible()
+    // Pointer opening has no keyboard ring; Escape restores a visible keyboard cue.
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(chevron).toHaveCSS('outline-style', 'none')
+    await page.keyboard.press('Escape')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expectDisclosureFocus()
+    await island.screenshot({ path: testInfo.outputPath('collapsed-keyboard-focus.png'), animations: 'disabled' })
+    if (mode === 'light' && !wallpaper) {
+      await page.emulateMedia({ forcedColors: 'active' })
+      await expectDisclosureFocus()
+      await island.screenshot({ path: testInfo.outputPath('forced-colors-keyboard-focus.png'), animations: 'disabled' })
+    }
+  })
+}
 
 test('Person general settings save independently, survive refresh and retain drafts across tabs', async ({ page }) => {
   const { state, operations } = await setup(page, 'light', false, false)
@@ -1341,6 +1505,7 @@ test('Person compression follows the interaction model and can restore the globa
   await page.keyboard.press('Escape')
   await page.locator('.input-model-button').click()
   await page.locator('.model-cascader:visible').getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await settings.click()
   await expect(panel.locator('.model-context-name')).toHaveText('fast-model')
   await expect(panel.locator('.model-context-capacity')).toContainText('128,000')
@@ -1570,6 +1735,7 @@ for (const mode of ['light', 'dark'] as const) {
     await expect(menu).toBeVisible()
     await page.screenshot({ path: `/tmp/person-chat-${mode}-models.png`, animations: 'disabled' })
     await menu.getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+    await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
     await expect(page.locator('.input-model-button')).toHaveAttribute('aria-label', 'fast-model')
     await page.reload()
     await expect(page.locator('.input-model-button')).toHaveAttribute('aria-label', 'fast-model')
@@ -1898,6 +2064,7 @@ test('Person offers model selection when the global default is unavailable', asy
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Global default model is unavailable. Choose a model.' }).click()
   await page.getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
 })
 
@@ -1916,6 +2083,7 @@ test('Person saves agent presets, preserves unsaved edits and only offers openin
   await page.getByRole('button', { name: 'Codex', exact: true }).click()
   await page.locator('.person-agent-settings .scoped-model-selector button').click()
   await page.getByRole('menuitemradio').filter({ hasText: 'global-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await page.locator('.person-agent-settings .n-select').last().click()
   await page.locator('.n-base-select-option__content:visible').getByText('High', { exact: true }).click()
   state.revision++ // Another window changed settings; keep the draft retryable.
@@ -2208,9 +2376,11 @@ test('stops a waiting task inside its conversation, then continues it without st
   await page.getByRole('button', { name: 'Tasks', exact: true }).click()
   await page.getByRole('button', { name: 'View in conversation: Check report', exact: true }).click()
   const drawer = page.locator('.person-task-chat')
-  await drawer.getByRole('button', { name: 'Stop task', exact: true }).click()
-  await expect(drawer.getByRole('button', { name: 'Stopping', exact: true })).toBeDisabled()
-  await expect(drawer.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled()
+  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+  const stop = drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true })
+  await expect(stop).toBeEnabled()
+  await stop.click()
+  await expect(stop).toBeDisabled()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.mouse.move(2, 940)
         await page.evaluate(async () => { await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))) })
@@ -2221,12 +2391,19 @@ test('stops a waiting task inside its conversation, then continues it without st
   await drawer.locator('.input-textarea').fill('Continue from the saved result')
   await drawer.getByRole('button', { name: 'Send', exact: true }).click()
   expect(operations.find(op => op.path.endsWith('/tasks/task1/chat') && op.body).body.expected_revision).toBe(1)
-  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toBeEnabled()
+  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+  await expect(stop).toBeEnabled()
   expect(await emitted(page, 'abort')).toEqual([])
   await page.keyboard.press('Escape')
   await expect(page.locator('.person-compose .input-textarea')).toHaveValue('Keep my draft')
   await emit(page, 'message.delta', { run_id: 'main-active', delta: 'Person is still responding.' })
   await expect(page.locator('.person-view').getByText('Person is still responding.', { exact: true })).toBeVisible()
+  await expect(page.locator('.person-compose .input-actions').getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
+  await page.locator('.person-compose .input-textarea').fill('')
+  const mainStop = page.locator('.person-compose .input-actions').getByRole('button', { name: 'Stop', exact: true })
+  await expect(mainStop).toBeEnabled()
+  await mainStop.click()
+  await expect.poll(() => emitted(page, 'abort')).toEqual([expect.objectContaining({ session_id: 'person-main-1' })])
 })
 
 test('refreshes a stale stop without automatically cancelling a newer execution', async ({ page }) => {
@@ -2273,7 +2450,8 @@ for (const mode of ['light', 'dark'] as const) {
     await page.evaluate(async () => { await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))) })
     await page.screenshot({ path: `/tmp/person-task-followups-${mode}.png` })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await drawer.getByRole('button', { name: 'Stop task', exact: true }).click()
+    await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+    await drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true }).click()
     await expect(drawer.locator('.task-chat-queue')).toHaveCount(0)
     expect(operations.filter(op => op.path.endsWith('/tasks/apply')).at(-1).body.execution_id).toBe('execution1')
     expect(await emitted(page, 'run')).toEqual([])
@@ -2282,7 +2460,7 @@ for (const mode of ['light', 'dark'] as const) {
 }
 
 for (const executionState of ['running', 'queued', 'waiting_user'] as const) {
-  test(`stops ${executionState} Person work with a saved follow-up draft`, async ({ page }) => {
+  test(`stops ${executionState} Person work from the composer and keeps a draft while stopping`, async ({ page }) => {
     const { state, operations } = await setup(page, executionState === 'queued' ? 'dark' : 'light', false)
     state.tasks[0].execution_state = executionState
     if (executionState !== 'running') await page.setViewportSize({ width: 390, height: 844 })
@@ -2296,18 +2474,21 @@ for (const executionState of ['running', 'queued', 'waiting_user'] as const) {
     const composer = drawer.locator('.input-textarea')
     await composer.fill('Keep this follow-up draft')
     await expect(drawer.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
-    const headerStop = drawer.getByRole('button', { name: 'Stop task', exact: true })
-    await expect(headerStop).toBeEnabled()
+    await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+    const stop = drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true })
+    await expect(stop).toHaveCount(0)
+    await composer.fill('')
+    await expect(stop).toBeEnabled()
     await page.mouse.move(2, 940)
         await page.evaluate(async () => { await Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))) })
     await page.screenshot({ path: `/tmp/person-composer-stop-${executionState}.png` })
-    await headerStop.click()
-    const stop = drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true })
+    await stop.click()
     await expect(stop).toBeDisabled()
     await expect(stop).toHaveAttribute('aria-busy', 'true')
+    await composer.fill('Keep this follow-up draft')
     await composer.press('Enter')
     expect(operations.filter(op => op.path.endsWith('/tasks/task1/chat') && op.body)).toHaveLength(0)
-    await expect(drawer.getByRole('button', { name: 'Stopping', exact: true })).toBeDisabled()
+    await expect(drawer.getByRole('button', { name: 'Stopping', exact: true })).toHaveCount(0)
     await expect(composer).toHaveValue('Keep this follow-up draft')
     expect(operations.filter(op => op.path.endsWith('/tasks/apply')).map(op => op.body)).toEqual([
       { action: 'stop', task_id: 'task1', execution_id: 'execution1', expected_revision: 0, idempotency_key: expect.any(String) },
@@ -2384,6 +2565,10 @@ for (const mode of ['light', 'dark'] as const) {
       await page.getByRole('textbox', { name: '用途说明', exact: true }).fill('整理会议纪要，提炼关键决策，并持续跟进待办事项。')
       await drawer.locator('.scoped-model-selector button').click()
       await page.getByRole('menuitemradio').filter({ hasText: 'deepseek-chat' }).click()
+      const protocol = page.getByRole('dialog', { name: '协议', exact: true })
+      await protocol.getByRole('button', { name: '确定', exact: true }).click()
+      await expect(protocol).toBeHidden()
+      await expect(drawer.locator('.scoped-model-selector')).toContainText('deepseek-chat')
       await capture('agent-editor')
       await drawer.getByRole('button', { name: '取消', exact: true }).click()
       await expect(drawer.locator('.agent-card')).toHaveCount(2)
@@ -2571,6 +2756,7 @@ async function addExecutionAgent(page: Page, conflict = false) {
   await settings.getByRole('textbox', { name: 'Purpose', exact: true }).fill('Handle assistant tasks')
   await settings.locator('.scoped-model-selector button').click()
   await page.getByRole('menuitemradio').filter({ hasText: 'global-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await settings.getByRole('button', { name: 'Save', exact: true }).click()
   if (conflict) {
     await expect(settings.locator('.n-alert')).toContainText('Settings changed')
@@ -2590,6 +2776,7 @@ for (const existing of [false, true]) {
     const draft = page.locator('.new-chat-page')
     await draft.getByRole('textbox', { name: 'BOT name' }).fill('New assistant')
     await draft.locator('.input-textarea').fill('My first message')
+    await chooseBotWorkspace(page)
     await draft.getByRole('button', { name: 'Send', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Add an execution agent' })
     await expect(dialog).toBeVisible()
@@ -2759,7 +2946,7 @@ test('Person releases shared loading and displays its initial request error', as
 })
 
 for (const mode of ['light', 'dark'] as const) {
-  test(`Person selects the shared workspace and clears history and tasks with a broom in ${mode}`, async ({ page }) => {
+  test(`Person changes its own workspace and clears history and tasks with a broom in ${mode}`, async ({ page }) => {
     if (mode === 'dark') await page.setViewportSize({ width: 360, height: 780 })
     const { state, operations } = await setup(page, mode, mode === 'dark')
     state.tasks[0].running = false
@@ -2776,7 +2963,7 @@ for (const mode of ['light', 'dark'] as const) {
     expect((await broom.textContent())?.trim()).toBe('')
     await workspace.click()
     const picker = page.locator('.n-modal:visible')
-    await expect(picker.getByText('All background tasks use this workspace.', { exact: false })).toBeVisible()
+    await expect(picker.getByText("Choose this Bot's workspace.", { exact: false })).toBeVisible()
     await picker.locator('.folder-path-input input').fill('/workspace/person-shared')
     await picker.getByRole('button', { name: 'OK', exact: true }).click()
     await expect(picker).toHaveCount(0)
@@ -2811,12 +2998,12 @@ for (const mode of ['light', 'dark'] as const) {
   })
 }
 
-test('Person disables workspace and broom controls while tasks or main replies are running', async ({ page }) => {
+test('Person permits workspace changes during background work and locks controls during main replies', async ({ page }) => {
   const { state, operations } = await setup(page, 'light', false)
   await page.goto('/#/person')
   const workspace = page.getByRole('button', { name: 'Workspace', exact: true })
   const broom = page.getByRole('button', { name: 'Clear chat history and tasks', exact: true })
-  await expect(workspace).toBeDisabled(); await expect(broom).toBeDisabled()
+  await expect(workspace).toBeEnabled(); await expect(broom).toBeDisabled()
   state.tasks[0].running = false
   await emit(page, 'person.updated', {})
   await expect(workspace).toBeEnabled(); await expect(broom).toBeEnabled()
@@ -3051,6 +3238,7 @@ for (const mode of ['light', 'dark'] as const) {
     await party.hover()
     await expect(party.locator('img')).toHaveAttribute('src', '/person/paidui/idle.png')
     await page.locator('.new-chat-page .input-textarea').fill('Hello party')
+    await chooseBotWorkspace(page)
     await page.locator('.new-chat-page').getByRole('button', { name: 'Send', exact: true }).click()
     await expect(page.locator('.person-title')).toHaveText('Party companion')
     expect(state.conversations.find((session: any) => session.title === 'Party companion').bot_type).toBe('paidui')
@@ -3141,6 +3329,7 @@ for (const mode of ['light', 'dark'] as const) {
     await page.screenshot({ path: `/tmp/person-new-chat-${mode}-desktop.png`, animations: 'disabled' })
     await draft.getByRole('textbox', { name: 'BOT name' }).fill('旅行计划')
     await draft.locator('.input-textarea').fill('Hello BOT')
+    await chooseBotWorkspace(page)
     await draft.getByRole('button', { name: 'Send', exact: true }).click()
     await expect(page.locator('.person-title')).toHaveText('旅行计划')
     const created = state.conversations.find((session: any) => session.title === '旅行计划')
@@ -3206,6 +3395,7 @@ for (const locale of ['en', 'zh'] as const) for (const mobile of [false, true]) 
       requestAnimationFrame(sample)
     })
     await page.locator('.new-chat-page .input-textarea').fill('Hello from the selected character')
+    await chooseBotWorkspace(page)
     await page.locator('.new-chat-page').getByRole('button', { name: 'Send', exact: true }).click()
     const overlay = page.locator('.agent-deployment-overlay')
     await expect(overlay).toHaveCount(1)
@@ -3245,7 +3435,7 @@ test('Person drafts its name, model and first message without changing the curre
   const draft = page.locator('.new-chat-page')
   await draft.locator('.input-textarea').fill('Plan my trip')
   await expect(draft.getByRole('textbox', { name: 'BOT name' })).toHaveValue('zhezhe')
-  await expect(draft.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
+  await expect(draft.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   await draft.getByRole('textbox', { name: 'BOT name' }).fill('')
   await expect(draft.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   await draft.getByRole('textbox', { name: 'BOT name' }).fill('旅行搭子')
@@ -3261,6 +3451,7 @@ test('Person drafts its name, model and first message without changing the curre
   await page.screenshot({ path: '/tmp/studio-bot-send-create/draft-light-desktop.png', animations: 'disabled' })
   await draft.locator('.input-model-button').click()
   await page.locator('.model-cascader:visible').getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+  await page.getByRole('dialog', { name: 'Protocol', exact: true }).getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(draft.locator('.input-model-button')).toHaveAttribute('aria-label', 'fast-model')
   expect(operations.some(operation => operation.path.endsWith('/settings'))).toBe(false)
   expect(state.session.model).toBe('global-model')
@@ -3278,6 +3469,8 @@ test('Person drafts its name, model and first message without changing the curre
   const request = operations.find(operation => operation.path.endsWith('/conversations') && operation.body?.title === '旅行搭子')
   expect(request.body).toMatchObject({ bot_type: 'zhezhe', model: { profile: 'default', provider: 'provider', model: 'fast-model' }, workspace: '/workspace/bot-draft', expected_revision: 0 })
   expect(created.workspace).toBe('/workspace/bot-draft')
+  expect(state.session.workspace).toBe('/tmp/person/default')
+  expect(state.tasks[0].workspace).toBeUndefined()
   await expect.poll(() => emitted(page, 'run')).toEqual([expect.objectContaining({ session_id: created.id, input: 'Plan my trip' })])
   await page.locator('.person-sidebar .session-item').filter({ hasText: 'Person' }).click()
   await expect(page.locator('.person-compose .input-textarea')).toHaveValue('Keep the current draft')
@@ -3297,6 +3490,7 @@ test('Person checks duplicate BOT names only on send and keeps the first message
   await expect(name).toHaveAttribute('aria-invalid', 'false')
   await expect(draft.getByRole('alert')).toHaveCount(0)
   await draft.locator('.input-textarea').fill('Keep this first message')
+  await chooseBotWorkspace(page)
   await name.fill(' ＰＥＲＳＯＮ ')
   await expect(name).toHaveAttribute('aria-invalid', 'false')
   await expect(draft.getByRole('alert')).toHaveCount(0)
@@ -3427,6 +3621,7 @@ test.describe('Person mobile conversation actions', () => {
       expect(state.tasks).toHaveLength(0)
       await page.getByRole('textbox', { name: 'BOT name' }).fill('新会话')
       await page.locator('.new-chat-page .input-textarea').fill('Hello BOT')
+      await chooseBotWorkspace(page)
       await page.getByRole('button', { name: 'Send', exact: true }).click()
       await expect(page.locator('.person-title')).toHaveText('新会话')
       expect(operations.filter(op => op.path === '/api/studio/person/conversations' && op.body?.title)).toHaveLength(1)
@@ -3469,6 +3664,7 @@ for (const deletion of ['single', 'batch'] as const) {
     await expect(page.locator('.person-alert')).toHaveCount(0)
     await page.getByRole('textbox', { name: 'BOT name' }).fill('Replacement BOT')
     await page.locator('.new-chat-page .input-textarea').fill('Hello again')
+    await chooseBotWorkspace(page)
     await page.getByRole('button', { name: 'Send', exact: true }).click()
     await expect(page.locator('.person-title')).toHaveText('Replacement BOT')
     expect(state.conversations).toHaveLength(1)
@@ -3724,31 +3920,27 @@ test('Person search uses the shared search dialog and only requests assistant co
 for (const [mode, wallpaper] of [['light', false], ['dark', true]] as const) {
 test(`Person uses the same desktop and mobile sidebar layout as single chat in ${mode}`, async ({ page }) => {
   const { state } = await setup(page, mode, wallpaper, false)
-  state.session.title = '旅行计划与工作安排：需要保持时间完整显示的长会话名称'
+  state.session.title = '旅行计划与工作安排：需要保持头像与名称布局的长会话名称'
   async function expectSingleLineSession() {
     const row = page.locator('.person-sidebar .session-item')
+    await expect(row.locator('.session-item-time')).toHaveCount(0)
+    await expect(row.locator('.session-item-title')).toHaveText(state.session.title)
     const layout = await row.evaluate(el => {
       const avatar = el.querySelector('.session-item-agent-logo')!.getBoundingClientRect()
       const title = el.querySelector<HTMLElement>('.session-item-title')!
       const name = title.getBoundingClientRect()
-      const time = el.querySelector('.session-item-time')!.getBoundingClientRect()
       return {
         avatarBeforeName: avatar.right < name.left,
-        nameBeforeTime: name.right < time.left,
         avatarCenter: avatar.y + avatar.height / 2,
         nameCenter: name.y + name.height / 2,
-        timeCenter: time.y + time.height / 2,
         nameTruncated: title.scrollWidth > title.clientWidth,
-        fitsRow: time.right <= el.getBoundingClientRect().right && el.scrollWidth <= el.clientWidth,
+        fitsRow: name.right <= el.getBoundingClientRect().right && el.scrollWidth <= el.clientWidth,
       }
     })
     expect(layout.avatarBeforeName).toBe(true)
-    expect(layout.nameBeforeTime).toBe(true)
     expect(Math.abs(layout.avatarCenter - layout.nameCenter)).toBeLessThan(1)
-    expect(Math.abs(layout.avatarCenter - layout.timeCenter)).toBeLessThan(1)
     expect(layout.nameTruncated).toBe(true)
     expect(layout.fitsRow).toBe(true)
-    await expect(row.locator('.session-item-time')).not.toBeEmpty()
   }
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/#/hermes/chat')
@@ -3871,6 +4063,7 @@ test('Person starts with the shared new conversation page and creates on mobile'
   await page.screenshot({ path: '/tmp/person-new-chat-dark-mobile.png', animations: 'disabled' })
   await page.getByRole('textbox', { name: 'BOT name' }).fill('移动会话')
   await page.locator('.new-chat-page .input-textarea').fill('Hello BOT')
+  await chooseBotWorkspace(page)
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.locator('.person-title')).toHaveText('移动会话')
   await expect(page.locator('.input-textarea')).toBeVisible()
@@ -4102,9 +4295,13 @@ test('switches execution conversations and keeps a historical follow-up on the s
   await page.getByRole('button', { name: 'View in conversation: Check report', exact: true }).click()
   const drawer = page.locator('.person-task-chat')
   await expect(drawer.getByText('second occurrence result', { exact: true })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+  await expect(drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
   await drawer.getByLabel('Execution history', { exact: true }).click()
   await page.locator('.n-base-select-option:visible').last().click()
   await expect(drawer.getByText('first occurrence result', { exact: true })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0)
+  await expect(drawer.locator('.input-actions').getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
   await expect(drawer.getByText('second occurrence result', { exact: true })).toHaveCount(0)
   await drawer.locator('.input-textarea').fill('Explain this occurrence')
   await drawer.getByRole('button', { name: 'Send', exact: true }).click()
@@ -4349,6 +4546,123 @@ for(const mode of ['light','dark'] as const){
     await expect(drawer.locator('.message.assistant .message-bubble p')).toContainText('Color sample')
     expect(await read(drawer)).toEqual(expected)
     await page.screenshot({path:testInfo.outputPath(`task-text-colors-${mode}.png`),animations:'disabled'})
+  })
+}
+
+
+test('BOT automatic relay protocols follow the model and keep manual overrides available', async ({ page }) => {
+  const { state } = await setup(page, 'dark', true)
+  state.modelGroups = [{ provider: 'provider', profile: 'default', label: 'Shared provider',
+    models: ['global-model', 'gpt-6.1-sol', 'claude-opus-4-6', 'gpt-image-2'],
+    api_mode_by_model: { 'global-model': null, 'gpt-6.1-sol': 'codex_responses', 'claude-opus-4-6': 'anthropic_messages', 'gpt-image-2': null } }]
+  await page.goto('/#/person')
+  const choose = async (model: string) => {
+    await page.locator('.input-model-button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: model }).click()
+  }
+  const dialog = page.getByRole('dialog', { name: 'Protocol', exact: true })
+  await choose('gpt-6.1-sol')
+  await expect.poll(() => state.settings.model).toMatchObject({ model: 'gpt-6.1-sol', apiMode: 'codex_responses' })
+  await expect(dialog).toBeHidden()
+  await choose('claude-opus-4-6')
+  await expect.poll(() => state.settings.model).toMatchObject({ model: 'claude-opus-4-6', apiMode: 'anthropic_messages' })
+  await expect(dialog).toBeHidden()
+  await choose('claude-opus-4-6')
+  await expect(dialog).toContainText('Anthropic Messages')
+  await dialog.locator('.n-select').click()
+  await page.locator('.n-base-select-option__content:visible').getByText('OpenAI Chat Completions (/v1/chat/completions)', { exact: true }).click()
+  await dialog.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect.poll(() => state.settings.model.apiMode).toBe('chat_completions')
+  await page.reload()
+  await choose('claude-opus-4-6')
+  await expect(dialog).toContainText('Chat Completions')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.getByRole('menuitemradio').filter({ hasText: 'gpt-image-2' }).click()
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  expect(state.settings.model).toMatchObject({ model: 'claude-opus-4-6', apiMode: 'chat_completions' })
+})
+
+for (const runtime of ['codex', 'claude-code']) {
+  test(`BOT executor automatically matches a new model protocol for ${runtime}`, async ({ page }) => {
+    const { state } = await setup(page, 'dark', true)
+    state.modelGroups = [{ provider: 'provider', profile: 'default', label: 'Shared provider', models: ['gpt', 'opus'],
+      api_mode_by_model: { gpt: 'codex_responses', opus: 'anthropic_messages' } }]
+    state.settings.agents[0].selection = { runtime, mode: 'scoped', profile: 'default', provider: 'provider', model: 'gpt', apiMode: 'codex_responses', reasoningEffort: '' }
+    await page.goto('/#/person')
+    await page.locator('.person-header-actions').getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('tab', { name: /^Agents/ }).click()
+    const settings = page.locator('.person-agent-settings')
+    await settings.getByRole('button', { name: 'Edit', exact: true }).click()
+    await settings.locator('.scoped-model-selector button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: 'opus' }).click()
+    await expect(page.getByRole('dialog', { name: 'Protocol', exact: true })).toBeHidden()
+    await settings.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect.poll(() => state.settings.agents[0].selection).toMatchObject({ runtime, model: 'opus', apiMode: 'anthropic_messages' })
+  })
+
+  test(`BOT saves independent GPT and Opus upstream protocols for ${runtime}`, async ({ page }) => {
+    const { state, operations } = await setup(page, 'dark', true)
+    state.modelGroups = [{ provider: 'provider', profile: 'default', label: 'Shared provider', models: ['gpt', 'opus'], api_mode: 'chat_completions' }]
+    state.settings.agents[0].selection = { runtime, mode: 'scoped', profile: 'default', provider: 'provider', model: 'gpt', apiMode: 'codex_responses', reasoningEffort: '' }
+    await page.goto('/#/person')
+    await page.locator('.person-header-actions').getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('tab', { name: /^Agents/ }).click()
+    const settings = page.locator('.person-agent-settings')
+    await settings.getByRole('button', { name: 'Edit', exact: true }).click()
+    await settings.locator('.scoped-model-selector button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: 'gpt' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Protocol', exact: true })
+    await expect(dialog).toContainText('OpenAI Responses')
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    expect(operations.filter(op => op.path.endsWith('/settings'))).toHaveLength(0)
+    await page.getByRole('menuitemradio').filter({ hasText: 'opus' }).click()
+    await dialog.locator('.n-select').click()
+    await page.locator('.n-base-select-option__content:visible').getByText('Anthropic Messages (/v1/messages)', { exact: true }).click()
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click()
+    await settings.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect.poll(() => state.settings.agents[0].selection).toMatchObject({ runtime, provider: 'provider', model: 'opus', apiMode: 'anthropic_messages' })
+    await page.reload()
+    await page.locator('.person-header-actions').getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('tab', { name: /^Agents/ }).click()
+    await settings.getByRole('button', { name: 'Edit', exact: true }).click()
+    await settings.locator('.scoped-model-selector button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: 'opus' }).click()
+    await expect(dialog).toContainText('Anthropic Messages')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await page.getByRole('menuitemradio').filter({ hasText: 'gpt' }).click()
+    await dialog.locator('.n-select').click()
+    await page.locator('.n-base-select-option__content:visible').getByText('OpenAI Responses (/v1/responses)', { exact: true }).click()
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click()
+    await settings.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect.poll(() => state.settings.agents[0].selection).toMatchObject({ model: 'gpt', apiMode: 'codex_responses' })
+  })
+}
+
+for (const [mode, wallpaper, width] of [['light', false, 1440], ['dark', false, 1440], ['light', true, 390], ['dark', true, 390]] as const) {
+  test(`BOT conversation protocol confirmation ${mode} wallpaper=${wallpaper} width=${width}`, async ({ page }, testInfo) => {
+    const { state, operations } = await setup(page, mode, wallpaper)
+    state.modelGroups = [{ provider: 'provider', profile: 'default', label: 'Shared provider', models: ['global-model', 'fast-model'], api_mode: 'chat_completions' }]
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto('/#/person')
+    await page.locator('.input-model-button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Protocol', exact: true })
+    await dialog.locator('.n-select').click()
+    await page.locator('.n-base-select-option__content:visible').getByText('Anthropic Messages (/v1/messages)', { exact: true }).click()
+    await expect(page.locator('.n-base-select-option__content:visible')).toHaveCount(0)
+    await page.screenshot({ path: testInfo.outputPath(`bot-protocol-${mode}-${width}.png`), animations: 'disabled' })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click()
+    await expect.poll(() => state.settings.model).toMatchObject({ model: 'fast-model', apiMode: 'anthropic_messages' })
+    expect(operations.filter(op => op.path.endsWith('/settings')).at(-1).body.model.apiMode).toBe('anthropic_messages')
+    await page.reload()
+    await page.locator('.input-model-button').click()
+    await page.getByRole('menuitemradio').filter({ hasText: 'fast-model' }).click()
+    await expect(dialog).toContainText('Anthropic Messages')
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    expect(state.settings.model.apiMode).toBe('anthropic_messages')
   })
 }
 
