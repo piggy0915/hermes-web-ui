@@ -227,7 +227,6 @@ async function saveConversationName() {
   finally { creating.value = false }
 }
 async function createDraftConversation(text?: string, attachments?: Attachment[]) {
-  if (!newConversationWorkspace.value?.trim()) { openWorkspace(); return false }
   if (!newConversationName.value.trim() || creating.value || (!text?.trim() && !attachments?.length)) return false
   if (!checkExecutionAgent()) return false
   personDeployment?.cancel()
@@ -240,7 +239,7 @@ async function createDraftConversation(text?: string, attachments?: Attachment[]
     const created = createdConversation.value ?? await personRequest<SessionSummary>('/conversations', {
       title: newConversationName.value.trim(), bot_type: newConversationBot.value,
       ...(newConversationModel.value ? { model: newConversationModel.value } : {}), reasoning_effort: newConversationEffort.value,
-      workspace: newConversationWorkspace.value, expected_revision: draftDefaults.value?.revision,
+      ...(newConversationWorkspace.value?.trim() ? { workspace: newConversationWorkspace.value.trim() } : {}), expected_revision: draftDefaults.value?.revision,
     }, 'POST', lifetime.signal)
     createdConversation.value = created
     chatStore.ensureSessionLoaded(created)
@@ -333,6 +332,13 @@ function attachToolFile(file: File) {
 }
 const chatExecutionId = ref<string>()
 function openTask(task: PersonTask) { showTasks.value = false; chatExecutionId.value = undefined; chatTaskId.value = task.id }
+async function closeTaskChat(restoreFocus: boolean) {
+  chatTaskId.value = null
+  void refresh()
+  if (!restoreFocus) return
+  await nextTick()
+  if (!chatTaskId.value && !toolsOpen.value && !showPanel.value && !showTasks.value && !isNewConversation.value) chatInputRef.value?.focusComposer()
+}
 provide(personTaskNavigation, (taskId, executionId) => { showTasks.value = false; chatExecutionId.value = executionId; chatTaskId.value = taskId })
 const showModelPicker = ref(false)
 const modelsLoading = ref(false)
@@ -672,22 +678,22 @@ onBeforeUnmount(() => { stopPersonUpdates(); disposed = true; personDeployment?.
             <NInput v-model:value="newConversationName" :maxlength="100" :disabled="draftLocked" :placeholder="t('person.botNamePlaceholder')" :status="duplicateBotName ? 'error' : undefined"
               :input-props="{ id: 'person-conversation-name', 'aria-label': t('person.botName'), 'aria-invalid': duplicateBotName, 'aria-describedby': duplicateBotName ? 'person-bot-name-error' : undefined }" />
             <NTooltip trigger="hover">
-              <template #trigger><NButton quaternary :disabled="draftLocked" :aria-label="t('chat.workspace')" :aria-expanded="showWorkspace" @click="openWorkspace"><FolderIcon /><span class="person-workspace-label">{{ newConversationWorkspace ? folderName(newConversationWorkspace) : t('chat.workspace') }}</span></NButton></template>
-              {{ newConversationWorkspace || t('person.workspaceHint') }}
+              <template #trigger><NButton quaternary circle :disabled="draftLocked" :aria-label="t('chat.workspace')" :aria-expanded="showWorkspace" @click="openWorkspace"><FolderIcon /></NButton></template>
+              {{ t('chat.workspace') }}
             </NTooltip>
           </div>
           <span v-if="duplicateBotName" id="person-bot-name-error" class="person-name-error" role="alert">{{ t('person.botNameExists') }}</span>
         </div>
         <ChatInput draft hide-settings managed-reasoning-effort :persist-draft="false" :draft-config="draftConfig"
-          :send-disabled="!newConversationName.trim() || !newConversationWorkspace?.trim() || !currentModel || creating || settingsWrites > 0" :submit="createDraftConversation"
+          :send-disabled="!newConversationName.trim() || !currentModel || creating || settingsWrites > 0" :submit="createDraftConversation"
           :model-label="modelLabel" :model-disabled="draftLocked" :model-expanded="showModelPicker"
           :reasoning-effort="reasoningEffort" :reasoning-effort-disabled="draftLocked || !currentModel"
           :scoped-reasoning-efforts="draftReasoningEfforts" :default-effort-label="t('person.defaultEffort')"
           @update:reasoning-effort="selectEffort" @model-click="openModels" />
       </NewChatPage>
       <NModal v-model:show="showWorkspace" preset="dialog" :title="t('chat.setWorkspaceTitle')" :positive-text="t('common.ok')" :negative-text="t('common.cancel')"
-        :positive-button-props="{ loading: settingsWrites > 0, disabled: !workspaceValue?.trim() || (isNewConversation ? draftLocked : busy || pending) }" style="width: var(--studio-workspace-picker-width)" @positive-click="saveWorkspace">
-        <p>{{ t('person.workspaceHint') }}</p>
+        :positive-button-props="{ loading: settingsWrites > 0, disabled: isNewConversation ? draftLocked : !workspaceValue?.trim() || busy || pending }" style="width: var(--studio-workspace-picker-width)" @positive-click="saveWorkspace">
+        <p>{{ t(isNewConversation ? 'person.newWorkspaceHint' : 'person.workspaceHint') }}</p>
         <div v-if="defaultWorkspaces.length" class="person-workspace-shortcuts">
           <NButton v-for="path in defaultWorkspaces" :key="path" size="tiny" :title="path" @click="workspaceValue = path">{{ folderName(path) }}</NButton>
         </div>
@@ -700,7 +706,7 @@ onBeforeUnmount(() => { stopPersonUpdates(); disposed = true; personDeployment?.
       <div v-if="!isNewConversation" id="person-tools-target" class="person-chat-layout">
       <div ref="chatSurface" class="person-chat-surface" :inert="isMobile && (!!chatTaskId || toolsOpen) || undefined">
       <div v-if="data.session" class="person-chat-messages">
-      <PersonTaskActivity :key="selectedSessionId" :session-id="data.session.id" :count="sessionStates.backgroundCount(selectedSessionId)" :agent-count="data.active_agent_task_count" :tasks="data.tasks" :flows="data.active_flows || data.flows || []" :flow-count="data.active_flow_count"
+      <PersonTaskActivity :key="selectedSessionId" :session-id="data.session.id" :count="sessionStates.backgroundCount(selectedSessionId)" :agent-count="data.active_agent_task_count" :tasks="data.active_tasks || data.tasks" :flows="data.active_flows || data.flows || []" :flow-count="data.active_flow_count"
         :avatar="chatSessionAgentAvatar(chatStore.activeSession)" :name="data.session.title || undefined"
         @refresh="refresh" @open-task="openTask" @open-flow="openActivityFlow" />
       <MessageList v-if="data.session" :user-label="t('person.you')" hide-tool-calls hide-run-usage hide-reasoning :activity-label="t('person.executing')" />
@@ -715,7 +721,7 @@ onBeforeUnmount(() => { stopPersonUpdates(); disposed = true; personDeployment?.
       </div>
       </div>
       <PersonTaskChat v-if="chatTaskId && data.session" ref="taskChatRef" :inert="isMobile && toolsOpen || undefined"
-        :key="`${chatTaskId}:${chatExecutionId || ''}`" :execution-id="chatExecutionId" :task-id="chatTaskId" :main-session-id="data.session.id" @close="chatTaskId = null; refresh()" />
+        :key="`${chatTaskId}:${chatExecutionId || ''}`" :execution-id="chatExecutionId" :task-id="chatTaskId" :main-session-id="data.session.id" @close="closeTaskChat" />
       </div>
       <NModal v-model:show="showAgentSetup" preset="dialog" :title="t('person.agentSetupTitle')" :aria-label="t('person.agentSetupTitle')"
         :positive-text="t('person.configureAgents')" :negative-text="t('common.cancel')"
@@ -786,7 +792,6 @@ onBeforeUnmount(() => { stopPersonUpdates(); disposed = true; personDeployment?.
 .person-name-error { color: $error; }
 .person-new-name-input { display: flex; align-items: center; gap: 8px; }
 .person-new-name-input :deep(.n-input) { flex: 1; min-width: 0; }
-.person-workspace-label { max-width: min(160px, 30vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person-view { flex: 1; display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; color: $text-primary; background: var(--card-container-bg, var(--bg-main-surface)); }
 .person-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; padding: calc(21px * var(--spacing-scale, 1)) calc(20px * var(--spacing-scale, 1)); border-bottom: var(--border-width, 1px) solid $border-color; }
 .header-left { display: flex; align-items: center; gap: calc(8px * var(--spacing-scale, 1)); overflow: hidden; flex: 1; min-width: 0; }
