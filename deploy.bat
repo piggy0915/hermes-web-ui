@@ -42,6 +42,18 @@ if exist "%PROJECT_ROOT%\scripts" (
     echo   OK scripts
 )
 
+if exist "%PROJECT_ROOT%\config" (
+    echo [6/8] Copying config ...
+    xcopy "%PROJECT_ROOT%\config" "%TARGET_DIR%\config\" /E /I /Y >nul
+    echo   OK config
+)
+
+if exist "%PROJECT_ROOT%\patches" (
+    echo [7/8] Copying patches ...
+    xcopy "%PROJECT_ROOT%\patches" "%TARGET_DIR%\patches\" /E /I /Y >nul
+    echo   OK patches
+)
+
 :: Copy root files
 echo [8/8] Copying root files...
 if exist "%PROJECT_ROOT%\AGENTS.md" (

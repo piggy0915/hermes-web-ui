@@ -41,8 +41,45 @@ RUN npm ci --ignore-scripts && npm rebuild node-pty
 
 COPY . .
 
+# ── 构建前置校验（2026-11-04）──────────────────────────────────────────────
+# packages/client/src/utils/agent-catalog.ts 静态 import ../../../../config/agents.json。
+# 该文件不属于上游 npm 包内容，从上游源码包同步时会缺失，构建期报
+#   UNRESOLVED_IMPORT: Could not resolve '../../../../config/agents.json'
+# 这里前置拦住并给出可执行的补救说明，避免跑到 vite 阶段才失败。
+RUN set -e; \
+    if [ ! -f /app/config/agents.json ]; then \
+      echo "FATAL: /app/config/agents.json 缺失（agent 目录数据，非 npm 依赖）" >&2; \
+      echo "  从现有镜像取回：docker cp hermes-webui:/app/config/agents.json app/config/" >&2; \
+      exit 1; \
+    fi; \
+    echo "ok: config/agents.json $(wc -c < /app/config/agents.json) bytes"
+
+# ── 本地补丁：注意力面板（2026-11-04 前只打在运行容器里，重建即丢）──────────
+# patches/attention/ 是一次性补丁包：4 个新文件 + 幂等注册脚本。
+# patch.py 对已应用的注册点会跳过，重复构建安全。
+RUN set -e; \
+    if [ -d /app/patches/attention ]; then \
+      cp -a /app/patches/attention/files/. /app/ && \
+      python3 /app/patches/attention/patch.py; \
+    else \
+      echo "skip: /app/patches/attention 不存在（未启用注意力面板补丁）"; \
+    fi
+
 RUN npm run build && npm prune --omit=dev
 RUN npm run verify:sharp-runtime
+
+# ── 构建产物护栏（2026-11-04）──────────────────────────────────────────────
+# 补丁丢失在历史上发生过两次（都表现为「镜像构建成功、功能却消失」）。
+# 这里把「补丁必须在产物里」变成构建失败的硬条件，而不是靠人工去容器里 ls。
+RUN set -e; \
+    echo "-- 校验注意力面板已进入产物 --"; \
+    test -n "$(ls /app/dist/client/assets/js 2>/dev/null | grep -i '^AttentionView-')" \
+      || { echo "FATAL: dist 中缺少 AttentionView chunk" >&2; exit 1; }; \
+    grep -q 'api/hermes/attention/panel' /app/dist/server/index.js \
+      || { echo "FATAL: server 产物缺少 /api/hermes/attention/panel 路由" >&2; exit 1; }; \
+    grep -q 'hermes.attention' /app/dist/client/assets/js/router-*.js \
+      || { echo "FATAL: 客户端路由缺少 hermes.attention" >&2; exit 1; }; \
+    echo "ok: 注意力面板产物校验通过"
 
 ENV NODE_ENV=production
 ENV HOME=/home/agent
