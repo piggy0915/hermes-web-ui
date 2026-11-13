@@ -1,10 +1,11 @@
 import type { Context } from 'koa'
 import { runMcpCredentials } from '../services/auth/run-mcp-credentials'
 import type { ApiRequest, PluginIdentity } from '../contracts/plugins'
-import { resolvePluginIdentity, pluginAdministrationIdentity, getPluginManager } from '../services/plugins/host'
+import { resolvePluginIdentity, pluginAdministrationIdentity, getPluginManager, getPluginDevelopment, ensureBuiltinPlugins } from '../services/plugins/host'
 import { PluginError } from '../services/plugins/errors'
 import { identifier, json } from '../services/plugins/schema'
 import { mergeSecrets, publicConfig } from '../services/plugins/policy'
+import { synchronizePluginMcpServers } from '../services/plugins/mcp'
 
 function body(ctx: Context): Record<string, any> { return (ctx.request.body || {}) as Record<string, any> }
 function login(ctx: Context) {
@@ -34,21 +35,24 @@ async function respond(ctx: Context, work: () => unknown | Promise<unknown>) {
 function clientConfig(record: ReturnType<ReturnType<typeof getPluginManager>['snapshot']>['plugins'][number]) {
   return publicConfig(record.config, record.manifest.configSchema)
 }
-export const list = (ctx: Context) => respond(ctx, () => {
+export const list = (ctx: Context) => respond(ctx, async () => {
   login(ctx)
+  await ensureBuiltinPlugins()
   const snapshot = getPluginManager().snapshot()
   return { ...snapshot, plugins: snapshot.plugins.map(record => ({ ...record, config: clientConfig(record) })) }
 })
 export const install = (ctx: Context) => respond(ctx, async () => {
   const who = management(ctx), input = body(ctx)
   if (input.trusted !== true) throw new PluginError('Confirm that this executable plugin is trusted')
-  await getPluginManager().install(who, input.source, input.revision, input.pluginId)
+  if (input.expectedVersion !== undefined && (typeof input.expectedVersion !== 'string' || input.expectedVersion.length > 128 || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(input.expectedVersion))) throw new PluginError('Invalid expected plugin version')
+  await getPluginManager().install(who, input.source, input.revision, input.pluginId, { expectedVersion: input.expectedVersion })
+  await synchronizePluginMcpServers()
   return { ok: true }
 })
 export const update = (ctx: Context) => respond(ctx, async () => {
   const who = management(ctx), input = body(ctx)
   if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new PluginError('enabled must be boolean')
-  if (input.action !== undefined && !['reload', 'rollback', 'uninstall'].includes(input.action)) throw new PluginError('Unknown plugin operation')
+  if (input.action !== undefined && !['reload', 'rollback', 'uninstall', 'stop-development'].includes(input.action)) throw new PluginError('Unknown plugin operation')
   const id = identifier(ctx.params.id)
   if (input.config !== undefined) {
     const record = getPluginManager().store.read().records[id]
@@ -56,6 +60,7 @@ export const update = (ctx: Context) => respond(ctx, async () => {
     input.config = mergeSecrets(json(input.config), record.config, record.manifest.configSchema)
   }
   await getPluginManager().update(who, id, input.revision, input)
+  await synchronizePluginMcpServers()
   return { ok: true }
 })
 export const client = (ctx: Context) => respond(ctx, async () => ({ source: await getPluginManager().client(identity(ctx), ctx.params.id) }))
@@ -82,7 +87,12 @@ export const storage = (ctx: Context) => respond(ctx, async () => {
   const who = identity(ctx), input = body(ctx), runtime = getPluginManager().runtime(who, ctx.params.id)
   runtime.require('storage.client')
   if (input.namespace !== undefined && (!Array.isArray(input.namespace) || input.namespace.length > 16 || input.namespace.some((part: unknown) => typeof part !== 'string' || !part || part.length > 256))) throw new PluginError('Invalid storage namespace')
-  const store = runtime.runContext(who, runtime.effects.controller.signal).storage.namespace(...(input.namespace || []))
+  const scope = input.scope || 'plugin'
+  if (!['plugin', 'user', 'profile', 'session'].includes(scope)) throw new PluginError('Invalid storage scope')
+  const state = runtime.runContext(who, runtime.effects.controller.signal).state
+  const selected = state[scope as 'plugin' | 'user' | 'profile' | 'session']
+  if (!selected) throw new PluginError('Storage scope is unavailable')
+  const store = selected.namespace(...(input.namespace || []))
   switch (input.action) {
     case 'get': { const value = await store.get(input.key); return { present: value !== undefined, value: value ?? null } }
     case 'set': await store.set(input.key, json(input.value)); return { ok: true }
@@ -90,4 +100,30 @@ export const storage = (ctx: Context) => respond(ctx, async () => {
     case 'keys': return { keys: await store.keys() }
     default: throw new PluginError('Unknown storage operation')
   }
+})
+
+export const developmentList = (ctx: Context) => respond(ctx, async () => {
+  management(ctx)
+  return getPluginDevelopment().list()
+})
+export const developmentStart = (ctx: Context) => respond(ctx, async () => {
+  const who = management(ctx), input = body(ctx)
+  if (input.trusted !== true) throw new PluginError('Confirm that this development project and its build scripts are trusted')
+  await getPluginDevelopment().start(who, identifier(ctx.params.id), input.revision)
+  return { ok: true }
+})
+export const developmentUnlink = (ctx: Context) => respond(ctx, async () => {
+  await getPluginDevelopment().unlink(management(ctx), identifier(ctx.params.id), Number(ctx.query.revision))
+  return { ok: true }
+})
+
+export const browser = (ctx: Context) => respond(ctx, async () => {
+  const who = identity(ctx), input = body(ctx), runtime = getPluginManager().runtime(who, ctx.params.id)
+  const controller = new AbortController()
+  const close = () => { if (!ctx.res.writableEnded) controller.abort() }
+  ctx.res.once('close', close)
+  try {
+    const signal = AbortSignal.any([runtime.effects.controller.signal, controller.signal])
+    return await runtime.browserRequest(who, signal, input.method, input.params || {})
+  } finally { ctx.res.off('close', close) }
 })

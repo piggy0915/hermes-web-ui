@@ -1,14 +1,14 @@
 import { test, expect } from '@playwright/test'
 import { resolve } from 'node:path'
 
-test('direct plugin pages stay available across accounts and Profiles while public navigation stays hidden', async ({ page }, testInfo) => {
+test('plugin pages and visible navigation follow enabled state across accounts and Profiles', async ({ page }, testInfo) => {
   let active = true, installed = true
   let releaseSlowProfile: (() => void) | undefined
   const slowProfile = new Promise<void>(resolve => { releaseSlowProfile = resolve })
   const clients: string[] = []
   let change = 0
   const makePlugin = (id: string, name: string, enabled: boolean, views: object[], capabilities = ['ui']) => ({
-    manifest: { id, name, description: name + ' description', apiVersion: 1, version: '1.0.0', client: 'client.mjs', capabilities, views },
+    manifest: { id, name, description: name + ' description', apiVersion: 1, version: '1.0.0', client: 'client.mjs', permissions: capabilities, views, navigation: { main: views.filter((v: any) => v.slot === 'page').map((v: any) => ({ viewId: v.id, icon: 'grid' })), settings: views.filter((v: any) => v.slot === 'settings').map((v: any) => ({ viewId: v.id, icon: 'settings' })) } },
     enabled, status: enabled ? 'active' : 'disabled', source: '/tmp/' + id, config: {}, tools: [], commands: [], actions: [],
   })
   await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -42,7 +42,7 @@ test('direct plugin pages stay available across accounts and Profiles while publ
   await expect(page.locator('.plugin-card')).toHaveCount(3)
   await expect(page.locator('iframe')).toHaveCount(0)
   expect(clients).toHaveLength(0)
-  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(2)
   await page.getByRole('textbox', { name: '搜索插件名称、描述…' }).fill('没有结果')
   await expect(page.getByText('没有匹配的插件')).toBeVisible()
   await page.getByRole('textbox', { name: '搜索插件名称、描述…' }).fill('Beta')
@@ -51,19 +51,25 @@ test('direct plugin pages stay available across accounts and Profiles while publ
   await page.getByRole('button', { name: '自动化 1', exact: true }).click()
   await expect(page.locator('.plugin-card')).toHaveCount(1)
   await expect(page.locator('.plugin-card')).toContainText('自动化助手')
-  await page.getByRole('button', { name: '全部 3', exact: true }).click()
+  await page.getByRole('button', { name: '所有类型 3', exact: true }).click()
   await page.screenshot({ path: testInfo.outputPath('center-light.png') })
   await page.getByRole('button', { name: 'Alpha 工作台', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('link', { name: '主页', exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('internal-page-links.png'), animations: 'disabled' })
   await page.locator('.n-tabs-tab').getByText('配置', { exact: true }).click()
   await expect(page.locator('iframe')).toHaveCount(0)
-  await page.getByRole('link', { name: '设置 ↗', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('link', { name: '主页', exact: true })).toHaveCount(0)
+  const settingsLink = page.getByRole('dialog').getByRole('link', { name: '设置', exact: true })
+  await expect(settingsLink).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('internal-settings-link.png'), animations: 'disabled' })
+  await settingsLink.click()
   await expect(page.frameLocator('iframe').locator('#root')).toHaveText('1/default:settings')
   await page.evaluate(() => (window as any).pluginFixture.navigate('/studio/plugins/alpha/report'))
   const frame = page.frameLocator('iframe')
   await expect(frame.locator('#root')).toHaveText('1/default:report')
   await page.reload()
   await expect(frame.locator('#root')).toHaveText('1/default:report')
-  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(2)
   await expect(page.locator('iframe')).toHaveCount(1)
   await page.evaluate(() => (window as any).pluginFixture.navigate('/studio/plugins/alpha/home'))
   await expect(frame.locator('#root')).toHaveText('1/default:home')
@@ -80,9 +86,9 @@ test('direct plugin pages stay available across accounts and Profiles while publ
   await expect(frame.locator('#root')).toHaveText('1/default:home')
   await page.evaluate(() => (window as any).pluginFixture.profile('slow'))
   await expect(frame.locator('#root')).toBeEmpty()
-  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(2)
   await page.evaluate(() => (window as any).pluginFixture.profile('other'))
-  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(2)
   await expect(frame.locator('#root')).toHaveText('1/other:home')
   releaseSlowProfile!()
   await expect(frame.locator('#root')).toHaveText('1/other:home')
@@ -91,7 +97,7 @@ test('direct plugin pages stay available across accounts and Profiles while publ
   await expect(frame.locator('#root')).toHaveText('2/other:home')
   await page.getByRole('button', { name: '管理插件' }).click()
   await expect(page.locator('.plugin-card')).toHaveCount(3)
-  await expect(page.getByText('全局插件 · 所有账号与 Profile 可用')).toBeVisible()
+  await expect(page.getByRole('complementary', { name: '开发你的插件' })).toBeVisible()
   await expect(page.getByRole('button', { name: '安装插件', exact: true })).toHaveCount(0)
   await page.keyboard.press('Escape')
   await page.evaluate(() => (window as any).pluginFixture.navigate('/studio/plugins/alpha/home'))

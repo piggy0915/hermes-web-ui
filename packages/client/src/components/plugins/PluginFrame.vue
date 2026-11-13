@@ -4,19 +4,25 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { NAlert, NInput, useDialog, useMessage } from 'naive-ui'
 import { getStoredUserId } from '@/api/client'
+import { createPluginSessionBridge } from '@/api/studio/plugin-sessions'
 import { pluginApi, pluginInvoke, pluginRequest, type InstalledPlugin, type Json, type PluginEvent } from '@/api/studio/plugins'
 import { pluginFrameDocument } from '@/plugins/frame'
+import { assertJson } from '../../../../plugin-sdk/src'
+import ModelCascader from '@/components/hermes/models/ModelCascader.vue'
+import { usePluginModelPicker } from '@/composables/usePluginModelPicker'
 
 const props = defineProps<{ plugin: InstalledPlugin; profile: string; view: string; slot: string; sessionId?: string; data?: Json; expanded?: boolean; sidebar?: boolean }>()
 const frame = ref<HTMLIFrameElement>()
 const height = ref(180)
 const error = ref('')
-const router = useRouter(), dialog = useDialog(), message = useMessage(), { t } = useI18n()
+const router = useRouter(), dialog = useDialog(), message = useMessage(), { t, locale } = useI18n()
 const route = useRoute()
 const documentSource = pluginFrameDocument()
+const modelPicker = usePluginModelPicker()
+const { request: modelPickerRequest } = modelPicker
 let release: (() => void) | undefined
 
-watch(() => [frame.value, props.plugin, props.profile, props.view, props.sessionId, props.data, route.fullPath] as const, async () => {
+watch(() => [frame.value, props.plugin, props.profile, props.view, props.sessionId, props.data, route.fullPath, locale.value] as const, async () => {
   release?.(); error.value = ''
   if (!frame.value) return
   const element = frame.value, controller = new AbortController(), channel = crypto.randomUUID()
@@ -24,6 +30,8 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
   let source: string | undefined, ready = false, started = false, timer: ReturnType<typeof setTimeout> | undefined
   let cursor = 0, generation = ''
   const send = (value: object) => element.contentWindow?.postMessage(JSON.parse(JSON.stringify({ ...value, channel })), '*')
+  const sessionBridge = createPluginSessionBridge(profile, plugin.manifest.id, controller.signal,
+    (id, event) => send({ type: 'session.event', id, event }))
   const dialogs = new Set<ReturnType<typeof dialog.create>>()
   const prompt = (text: string, input: boolean): Promise<string | boolean | null> => new Promise(resolve => {
     let value = ''
@@ -57,7 +65,7 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
     started = true
     const theme = themeSnapshot()
     const query = Object.fromEntries(Object.entries(route.query).map(([key, value]) => [key, Array.isArray(value) ? value.map(item => item ?? '') : value ?? '']))
-    send({ type: 'studio.plugin.init', source, theme, context: { plugin: plugin.manifest, config: plugin.config, identity: { userId: getStoredUserId(), profile, sessionId, surface: props.slot }, view: props.view, slot: props.slot, data: props.data ?? null, location: { path: route.path, query } } })
+    send({ type: 'studio.plugin.init', source, theme, context: { plugin: plugin.manifest, config: plugin.config, locale: locale.value, identity: { userId: getStoredUserId(), profile, sessionId, surface: props.slot }, view: props.view, slot: props.slot, data: props.data ?? null, location: { path: route.path, query } } })
     void poll()
   }
   async function receive(event: MessageEvent) {
@@ -70,14 +78,28 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
     if (data.type !== 'request' || !Number.isSafeInteger(data.id)) return
     const args = data.args || {}
     try {
+      // Validate plugin-owned data before HTTP JSON serialization can drop or coerce it.
+      if (data.method === 'rpc') assertJson(args.input ?? null)
+      if (data.method === 'api' && args.options?.body !== undefined) assertJson(args.options.body)
+      if (data.method === 'browser') assertJson(args.params || {})
+      if (data.method === 'storage' && args.action === 'set') assertJson(args.value)
+      if (data.method === 'session-command' && args.method === 'run') {
+        assertJson(args.args?.input)
+        if (args.args?.options !== undefined) assertJson(args.args.options)
+      }
       let value: unknown
       switch (data.method) {
+        case 'session-open':
+        case 'session-command':
+        case 'session-close': value = await sessionBridge(data.method, args); break
+        case 'browser': value = await pluginRequest(profile, `/${plugin.manifest.id}/browser`, { method: args.method, params: args.params || {}, sessionId }, 'POST', controller.signal); break
         case 'api': value = await pluginApi(profile, plugin.manifest.id, args.path, args.options || {}, sessionId, controller.signal); break
         case 'rpc': value = await pluginInvoke(profile, plugin.manifest.id, 'rpc', args.name, args.input ?? null, sessionId, controller.signal); break
-        case 'storage': value = await pluginRequest(profile, `/${plugin.manifest.id}/storage`, { action: args.action, key: args.key, value: args.value, namespace: args.namespace, sessionId }, 'POST', controller.signal); break
+        case 'storage': value = await pluginRequest(profile, `/${plugin.manifest.id}/storage`, { action: args.action, key: args.key, value: args.value, scope: args.scope, namespace: args.namespace, sessionId }, 'POST', controller.signal); break
         case 'notify': message[['info', 'success', 'error'].includes(args.level) ? args.level as 'info' : 'info'](`${plugin.manifest.name}: ${String(args.message).slice(0, 2000)}`); value = null; break
         case 'confirm': value = await prompt(String(args.message).slice(0, 2000), false); break
         case 'prompt': value = await prompt(String(args.message).slice(0, 2000), true); break
+        case 'select-model': value = await modelPicker.open(profile, args, controller.signal); break
         case 'navigate':
           if (typeof args.path !== 'string' || !/^\/(?:hermes|studio|ekko)\//.test(args.path) || args.path.includes('\\')) throw new Error('Invalid Studio route')
           await router.push(args.path); window.dispatchEvent(new Event('studio.plugin.navigate')); value = null; break
@@ -99,6 +121,11 @@ onBeforeUnmount(() => release?.())
   <section class="plugin-frame" :class="{ 'plugin-frame--expanded': expanded, 'plugin-frame--sidebar': sidebar }" data-theme-surface="card">
     <NAlert v-if="error" type="error">{{ error }}</NAlert>
     <iframe ref="frame" :title="`${plugin.manifest.name}: ${view}`" sandbox="allow-scripts" referrerpolicy="no-referrer" :style="expanded ? undefined : { height: `${height}px` }" />
+    <ModelCascader v-if="modelPickerRequest" :show="true" :groups="modelPickerRequest.catalog.groups"
+      :provider="modelPickerRequest.current?.provider" :model="modelPickerRequest.current?.model"
+      :custom-models="modelPickerRequest.catalog.custom_models || {}" :display-name="modelPicker.displayName"
+      :title="`${plugin.manifest.name} · ${t('models.selectModel')}`" :close-on-select="false"
+      @select="modelPicker.choose" @update:show="show => { if (!show) modelPicker.cancel() }" />
   </section>
 </template>
 <style scoped lang="scss">

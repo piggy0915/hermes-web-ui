@@ -4,8 +4,10 @@ import { cp, mkdir, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { PluginManifest } from '../../contracts/plugins'
 import { manifest } from './schema'
+import { PLUGIN_ICON_PATHS } from '../../contracts/plugins'
 import { PluginError } from './errors'
 import { windowsCmdShimExecution } from '../../public/windows-command'
+import { builtinPluginDirectory } from './builtin-directory'
 
 export async function pluginFile(directory: string, entry: string): Promise<string> {
   const root = await realpath(directory)
@@ -14,7 +16,7 @@ export async function pluginFile(directory: string, entry: string): Promise<stri
   if (!offset || offset.startsWith(`..${sep}`) || offset === '..' || isAbsolute(offset) || !(await stat(file)).isFile()) throw new PluginError('Plugin entry escapes its package')
   return file
 }
-export async function readManifest(directory: string): Promise<PluginManifest> {
+export async function readManifest(directory: string, options: { validateEntries?: boolean } = {}): Promise<PluginManifest> {
   const path = await pluginFile(directory, 'package.json')
   const pkg = JSON.parse(await readFile(path, 'utf8'))
   const manifestPath = await pluginFile(directory, 'plugin.json').catch(error => {
@@ -23,9 +25,9 @@ export async function readManifest(directory: string): Promise<PluginManifest> {
   })
   const result = manifest(JSON.parse(await readFile(manifestPath, 'utf8')))
   if (pkg.version !== undefined && pkg.version !== result.version) throw new PluginError('Package and plugin versions must match')
-  for (const entry of [result.server, result.client].filter(Boolean)) await pluginFile(directory, entry!)
+  if (options.validateEntries !== false) for (const entry of [result.server, result.client].filter(Boolean)) await pluginFile(directory, entry!)
   async function icon(value: string | undefined): Promise<string | undefined> {
-    if (!value || value.startsWith('data:')) return value
+    if (!value || value.startsWith('data:') || Object.hasOwn(PLUGIN_ICON_PATHS, value)) return value
     const file = await pluginFile(directory, value)
     if ((await stat(file)).size > 256_000) throw new PluginError('Plugin icon exceeds 256 KB')
     const type = /\.jpe?g$/i.test(value) ? 'jpeg' : value.split('.').at(-1)!.toLowerCase()
@@ -33,6 +35,7 @@ export async function readManifest(directory: string): Promise<PluginManifest> {
   }
   if (result.icon) result.icon = await icon(result.icon)
   for (const view of result.views || []) if (view.icon) view.icon = await icon(view.icon)
+  for (const entry of result.navigation?.main || []) entry.icon = (await icon(entry.icon))!
   return manifest(result)
 }
 export async function installPackage(root: string, source: string): Promise<{ manifest: PluginManifest; directory: string; dispose: () => Promise<void> }> {
@@ -42,8 +45,8 @@ export async function installPackage(root: string, source: string): Promise<{ ma
   const dispose = () => rm(stage, { recursive: true, force: true })
   try {
     let directory: string
-    if (isAbsolute(source)) {
-      const real = await realpath(source)
+    if (isAbsolute(source) || source.startsWith('builtin:')) {
+      const real = await realpath(source.startsWith('builtin:') ? builtinPluginDirectory(source.slice(8)) : source)
       if (!(await stat(real)).isDirectory()) throw new PluginError('Local plugin source must be a directory')
       if (stage.startsWith(`${real}${sep}`)) throw new PluginError('Plugin source contains its installation directory')
       await readManifest(real)
@@ -51,7 +54,8 @@ export async function installPackage(root: string, source: string): Promise<{ ma
       await cp(real, directory, { recursive: true, dereference: false, filter: path => !/^(?:\.git|\.env(?:\..*)?)$/.test(path.split(sep).at(-1) || '') })
     } else {
       if (!/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+@\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(source)
-        && !/^github:[\w.-]+\/[\w.-]+#[a-f0-9]{40}$/.test(source)) throw new PluginError('Use an absolute directory, package@exact-version or github:owner/repo#full-commit')
+        && !/^github:[\w.-]+\/[\w.-]+#[a-f0-9]{40}$/.test(source)
+        && !/^git\+https:\/\/(?:gitlab\.com|gitee\.com)\/[\w.-]+(?:\/[\w.-]+)+\.git#[a-f0-9]{40}$/.test(source)) throw new PluginError('Use an absolute directory, package@exact-version or a supported repository pinned to a full commit')
       const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
       const args = ['install', '--prefix', stage, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--package-lock=true', '--', source]
       const execution = process.platform === 'win32' ? windowsCmdShimExecution(npm, args) : { command: npm, args }
@@ -62,6 +66,8 @@ export async function installPackage(root: string, source: string): Promise<{ ma
       if (names.length !== 1 || !/^(?:@[\w.-]+\/)?[\w.-]+$/.test(names[0])) throw new PluginError('Unable to locate installed plugin package')
       directory = join(stage, 'node_modules', names[0])
     }
-    return { manifest: await readManifest(directory), directory, dispose }
+    const result = await readManifest(directory)
+    if (source.startsWith('builtin:') && result.id !== source.slice(8)) throw new PluginError('Bundled plugin id does not match its directory')
+    return { manifest: result, directory, dispose }
   } catch (error) { await dispose(); throw error }
 }

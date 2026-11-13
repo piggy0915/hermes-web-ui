@@ -1,5 +1,7 @@
 import { registerDesktopBrowserRelay } from '../modules/studio/sockets/desktop-browser'
+import { registerPluginSessions } from '../modules/studio/sockets/plugin-sessions'
 import { startPluginHost, stopPluginHost } from '../modules/studio/services/plugins/host'
+import { registerPluginMcpSync } from './plugin-mcp'
 import { setupMobileTerminal } from '../modules/hermes/sockets/mobile-terminal'
 import { getSessionMetadata as getTerminalSessionMetadata } from '../modules/studio/public/sessions'
 import Koa from 'koa'
@@ -471,6 +473,9 @@ export async function bootstrap() {
     console.error('[bootstrap] ekko-agent setup failed; continuing without Ekko:', err instanceof Error ? err.message : err)
   }
 
+  const releasePluginMcpSync = registerPluginMcpSync()
+  additionalShutdownSteps.push({ name: 'Plugin MCP synchronization', close: releasePluginMcpSync })
+
   agentBridgeManager = getAgentBridgeManager()
   if (!isDesktopRuntime()) {
     await startRuntimeServicesBeforeListen(hermesAgentAvailable)
@@ -637,6 +642,7 @@ export async function bootstrap() {
   personPresenceServer.init()
   additionalShutdownSteps.push({ name: 'Person presence', close: () => personPresenceServer.close() })
   registerDesktopBrowserRelay(activeGroupChatServer.getIO())
+  registerPluginSessions(activeGroupChatServer.getIO())
 
   startGlobalAgentServer(activeGroupChatServer.getIO(), { localBaseUrl: loopbackBaseUrl })
   console.log('[bootstrap] global agent server ready')

@@ -1,17 +1,20 @@
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
+import { join, relative, sep, dirname } from 'node:path'
 import type { ApiRequest, HookResult, Json, PluginEvent, PluginHook, PluginIdentity, PluginRecord, PluginSnapshot, ToolResult } from '../../contracts/plugins'
 import { PluginError, message } from './errors'
 import { installPackage, pluginFile } from './installer'
 import { PluginRuntime, type PluginPorts } from './runtime'
-import { configuration, identifier, json } from './schema'
+import { configuration, identifier, json, manifest } from './schema'
 import { PluginStore, readJson, scopeKey, writeJson, type PluginState } from './store'
 
 function previousVersion(record: PluginRecord): Omit<PluginRecord, 'previous'> {
   const { previous: _previous, ...version } = record
   return version
 }
+function packagePresent(record: PluginRecord): boolean { return existsSync(join(record.directory, 'plugin.json')) }
+const missingPackage = () => new PluginError('Plugin package is missing; reinstall or uninstall this plugin', 'PLUGIN_PACKAGE_MISSING', 404)
 
 export class PluginManager {
   readonly store: PluginStore
@@ -23,6 +26,7 @@ export class PluginManager {
   private sequence = 0
   private closing = false
   private ports: PluginPorts
+  registeredAgents() { return [...this.runtimes.values()].filter(runtime => packagePresent(runtime.record)).flatMap(runtime => [...runtime.agents.values()]) }
   constructor(home: string, ports: PluginPorts) {
     this.store = new PluginStore(home)
     this.ports = { ...ports, emit: (id, event) => { this.publish(id, event, event.audience === 'plugin'); ports.emit(id, event) },
@@ -49,6 +53,8 @@ export class PluginManager {
     }
   }
   private async mount(identity: PluginIdentity, record: PluginRecord): Promise<PluginRuntime> {
+    if (!packagePresent(record)) throw missingPackage()
+    manifest(record.manifest)
     this.dependencies(record)
     const runtime = new PluginRuntime(record, { userId: identity.userId, profile: identity.profile }, this.store, this.ports)
     try { await runtime.load(); runtime.activate() } catch (e) { await runtime.close().catch(() => {}); throw e }
@@ -60,9 +66,10 @@ export class PluginManager {
     const state = this.store.read()
     return { revision: state.revision, plugins: Object.values(state.records).map(record => {
       const { directory: _directory, runtimeIdentity: _runtimeIdentity, previous, ...rest } = record
-      const runtime = this.runtimes.get(record.manifest.id)
-      return { ...rest, status: runtime ? 'active' : record.enabled ? 'failed' : 'disabled',
-        previousVersion: previous?.manifest.version, error: this.errors.get(record.manifest.id),
+      const present = packagePresent(record)
+      const runtime = present ? this.runtimes.get(record.manifest.id) : undefined
+      return { ...rest, status: !present ? 'failed' : runtime ? 'active' : record.enabled ? 'failed' : 'disabled',
+        previousVersion: previous?.manifest.version, error: present ? this.errors.get(record.manifest.id) : missingPackage().message,
         tools: [...(runtime?.tools.values() || [])].map(({ name, description, inputSchema, readOnly }) => ({ name, description, inputSchema, readOnly })),
         commands: [...(runtime?.commands.values() || [])].map(({ name, description }) => ({ name, description })),
         actions: [...(runtime?.actions.values() || [])].map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
@@ -82,16 +89,19 @@ export class PluginManager {
     this.operations.set(key, current)
     try { return await current } finally { if (this.operations.get(key) === current) this.operations.delete(key) }
   }
-  async install(identity: PluginIdentity, source: string, revision: number, expectedId?: string): Promise<PluginSnapshot> {
+  async install(identity: PluginIdentity, source: string, revision: number, expectedId?: string, options?: { developmentDirectory?: string; enabled?: boolean; expectedVersion?: string }): Promise<PluginSnapshot> {
     return this.transaction(identity, revision, async state => {
       const pkg = await installPackage(this.store.directory(), source)
       try {
         const id = pkg.manifest.id
         if (expectedId && id !== expectedId) throw new PluginError('Update package has a different plugin id')
+        if (options?.expectedVersion && pkg.manifest.version !== options.expectedVersion) throw new PluginError('Update package version does not match the published release')
         const old = state.records[id]
         if (old && !expectedId) throw new PluginError('Plugin already installed; use Update', 'PLUGIN_EXISTS', 409)
-        const next: PluginRecord = { manifest: pkg.manifest, directory: pkg.directory, source, installedAt: Date.now(), enabled: old?.enabled || false,
-          config: configuration(pkg.manifest.configSchema, old?.config || {}, !!old?.enabled), ...(old ? { previous: previousVersion(old) } : {}) }
+        const next: PluginRecord = { manifest: pkg.manifest, directory: pkg.directory, source, installedAt: Date.now(), enabled: options?.enabled ?? old?.enabled ?? false,
+          ...(options?.developmentDirectory ? { developmentDirectory: options.developmentDirectory } : {}),
+          config: configuration(pkg.manifest.configSchema, old?.config || {}, !!(options?.enabled ?? old?.enabled)), ...(old ? { previous: previousVersion(old) } : {}) }
+        if (source.startsWith('builtin:')) (state.builtinVersions ||= {})[id] = pkg.manifest.version
         await this.replace(identity, state, id, next)
         return this.snapshot(identity)
       } catch (e) { await pkg.dispose(); throw e }
@@ -99,6 +109,10 @@ export class PluginManager {
   }
   private async replace(identity: PluginIdentity, state: PluginState, id: string, next: PluginRecord | undefined): Promise<void> {
     const old = state.records[id]
+    const mcpName = next?.manifest.mcp?.name
+    if (mcpName && mcpName !== 'ekko-studio-plugins' && Object.values(state.records).some(other => other.manifest.id !== id && other.manifest.mcp?.name === mcpName)) {
+      throw new PluginError(`Plugin MCP name ${mcpName} is already used by another plugin`, 'PLUGIN_MCP_CONFLICT', 409)
+    }
     if (next) next.runtimeIdentity = { userId: identity.userId, profile: identity.profile }
     for (const other of Object.values(state.records)) {
       const required = other.manifest.dependencies?.[id]
@@ -120,27 +134,40 @@ export class PluginManager {
       throw error
     }
   }
-  async update(identity: PluginIdentity, id: string, revision: number, input: { enabled?: boolean; config?: Record<string, Json>; action?: 'reload' | 'rollback' | 'uninstall' }): Promise<PluginSnapshot> {
+  async update(identity: PluginIdentity, id: string, revision: number, input: { enabled?: boolean; config?: Record<string, Json>; action?: 'reload' | 'rollback' | 'uninstall' | 'stop-development' }): Promise<PluginSnapshot> {
     identifier(id)
     return this.transaction(identity, revision, async state => {
       const record = state.records[id]
       if (!record) throw new PluginError('Plugin not found', 'PLUGIN_NOT_FOUND', 404)
       let next: PluginRecord | undefined = structuredClone(record)
-      if (input.action === 'uninstall') next = undefined
-      else if (input.action === 'rollback') {
+      if (input.action === 'uninstall') {
+        next = undefined
+        // An explicitly removed local/market installation must not reappear as a
+        // bundled plugin on the next list request or restart.
+        state.builtinVersions ||= {}
+        state.builtinVersions[id] ||= record.manifest.version
+      } else if (input.action === 'rollback') {
         if (!record.previous) throw new PluginError('No previous plugin version')
         next = { ...record.previous, enabled: record.enabled, previous: previousVersion(record) }
+        delete next.developmentDirectory
       } else {
+        if (input.action === 'stop-development') delete next.developmentDirectory
         if (input.enabled !== undefined) next.enabled = input.enabled
         if (input.config !== undefined) next.config = configuration(next.manifest.configSchema, input.config)
       }
       if (next?.enabled) next.config = configuration(next.manifest.configSchema, next.config)
-      await this.replace(identity, state, id, next)
+      if (input.action === 'stop-development' && input.enabled === undefined && input.config === undefined) {
+        state.records[id] = next!
+        this.store.write(state, state.revision)
+        this.publish(id, { id: randomUUID(), type: 'plugin.changed', timestamp: Date.now(), identity, data: null }, true)
+      } else await this.replace(identity, state, id, next)
       return this.snapshot(identity)
     })
   }
   runtime(_identity: PluginIdentity, id: string): PluginRuntime {
     const value = this.runtimes.get(id)
+    const record = this.store.read().records[id]
+    if (record && !packagePresent(record)) throw missingPackage()
     if (!value) throw new PluginError('Plugin is disabled or unavailable', 'PLUGIN_UNAVAILABLE', 409)
     return value
   }
@@ -156,7 +183,7 @@ export class PluginManager {
     const runtime = this.runtime(identity, id)
     await this.ports.authorize(identity)
     const combined = AbortSignal.any([runtime.effects.controller.signal, ...(signal ? [signal] : [])])
-    return runtime.runContext(identity, combined).api.request(path, options)
+    return runtime.runContext(identity, combined).host.request(path, options)
   }
   async callTool(identity: PluginIdentity, name: string, input: Record<string, Json>, signal?: AbortSignal): Promise<ToolResult> {
     const [id, tool, extra] = name.split('/')
@@ -196,10 +223,17 @@ export class PluginManager {
   private log(id: string, identity: PluginIdentity, level: string, text: string, data?: Json) {
     const file = join(this.store.directory(), 'logs', `${identifier(id)}.json`)
     const entries = readJson<Json[]>(file, () => [])
-    entries.push({ timestamp: Date.now(), level, message: text, identity: json(identity), ...(data === undefined ? {} : { data: json(data) }) })
+    entries.push({ timestamp: Date.now(), level, message: text, identity: json(Object.fromEntries(Object.entries(identity).filter(([, value]) => value !== undefined))), ...(data === undefined ? {} : { data: json(data) }) })
     writeJson(file, entries.slice(-200))
   }
   logs(_identity: PluginIdentity, id: string) { return readJson<Json[]>(join(this.store.directory(), 'logs', `${identifier(id)}.json`), () => []) }
+  async pruneDevelopmentPackage(directory: string): Promise<void> {
+    const versions = join(this.store.directory(), 'versions')
+    const parts = relative(versions, directory).split(sep)
+    if (parts.length !== 2 || !/^[a-f0-9-]{36}$/.test(parts[0]) || parts[1] !== 'package') return
+    if (Object.values(this.store.read().records).some(record => record.directory === directory || record.previous?.directory === directory)) return
+    await rm(dirname(directory), { recursive: true, force: true }).catch(() => {})
+  }
   async close(): Promise<void> {
     this.closing = true
     await Promise.allSettled([...this.operations.values()])

@@ -11,6 +11,7 @@ import { isNativeCodingAgent, nativeCodingAgentSupportsScoped, isGlobalOnlyCodin
 import { prioritizeManagedNpmBin } from './managed-command-path'
 import { readTomlAssignment } from './toml-assignment'
 import { studioMcpCapabilities } from '../../studio/public/runs/mcp-capabilities'
+import { pluginMcpServers, mergePluginMcpServers } from '../../studio/public/plugin-mcp'
 import { DshManagedInstall, validateDshInstallOptions, type DshInstallOptions } from './dsh/managed-install'
 import { preflightDsh } from './dsh/preflight'
 import { prepareDshRuntime, DSH_API_KEY_ENV } from './dsh/runtime-config'
@@ -27,7 +28,7 @@ import { promisify } from 'util'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { getWebUiHome } from '../../studio/public/config'
 import { getProfileDir, PROVIDER_ENV_MAP, readConfigYamlForProfile, safeReadFile } from '../../studio/public/profile-config'
-import { getCompatibleCustomProviders } from '../../studio/contracts/provider-compat'
+import { getCompatibleCustomProviders, resolveCustomProviderApiKey } from '../../studio/contracts/provider-compat'
 import { registerClaudeCodeProxyTarget } from './claude-code/proxy'
 import { registerCodexProxyTarget, restoreCodexProxyTarget } from './codex/proxy'
 import { compactCodexThread } from './codex/compact'
@@ -95,6 +96,7 @@ const HERMES_MCP_SERVERS: ReadonlyArray<{ name: string; toolset: string }> = [
   { name: 'ekko-studio-interaction', toolset: 'plan' },
 ]
 const HERMES_MCP_SERVER_NAMES: Set<string> = new Set(HERMES_MCP_SERVERS.map(server => server.name))
+const managedMcpServers = () => [...HERMES_MCP_SERVERS, ...pluginMcpServers()]
 const LEGACY_HERMES_MCP_SERVER_NAMES = new Set([
   'ekko-studio-plan',
   'hermes-studio-api',
@@ -717,11 +719,7 @@ async function resolveStoredProviderLaunchInput(
   if (customEntry) {
     canonicalProvider = `custom:${slugProviderName(String(customEntry.name || normalizedProvider))}`
     if (!baseUrl) baseUrl = String(customEntry.base_url || '').trim()
-    if (!apiKey) apiKey = String(customEntry.api_key || '').trim()
-    if (!apiKey) {
-      const keyEnv = String(customEntry.key_env || '').trim()
-      if (keyEnv) apiKey = parseEnvValue(envContent, keyEnv)
-    }
+    if (!apiKey) apiKey = resolveCustomProviderApiKey(customEntry, envContent)
     if (!apiMode) {
       apiMode = normalizeLaunchApiMode(
         customEntry.api_mode,
@@ -1019,7 +1017,7 @@ async function prepareGlobalCodexShadowHome(rootDir: string, systemPrompt: strin
     if (HERMES_MCP_SERVER_NAMES.has(name) || LEGACY_HERMES_MCP_SERVER_NAMES.has(name)
       || server?.env?.[HERMES_MCP_MANAGED_ENV_KEY]) delete externalMcp[name]
   }
-  config.mcp_servers = { ...externalMcp, ...getCodingAgentManagedMcpServerConfigs('codex', profile, runTokenFile) } as any
+  config.mcp_servers = mergePluginMcpServers(externalMcp, getCodingAgentManagedMcpServerConfigs('codex', profile, runTokenFile)) as any
   await writeFile(join(rootDir, 'config.toml'), stringifyToml(config), { mode: 0o600 })
 
   const promptPath = join(rootDir, 'AGENTS.md')
@@ -1211,22 +1209,23 @@ function inheritClaudeSettings(existingContent: string | null | undefined = ''):
 
 function claudeMcpConfigJson(profile: string, runTokenFile: string | undefined, ...existingContents: Array<string | null | undefined>): string {
   const mcpServers: Record<string, unknown> = {}
+  const managed: Record<string, unknown> = {}
   for (const content of existingContents) {
     Object.assign(mcpServers, parseClaudeMcpServers(content))
   }
-  for (const server of HERMES_MCP_SERVERS) {
+  for (const server of managedMcpServers()) {
     if (getDisabledManagedMcpServers('claude-code', profile).has(server.name)) continue
     const config = managedHermesMcpServerConfig('claude-code', profile, server.name, server.toolset, runTokenFile)
-    mcpServers[server.name] = config
+    managed[server.name] = config
   }
-  return `${JSON.stringify({ mcpServers }, null, 2)}\n`
+  return `${JSON.stringify({ mcpServers: mergePluginMcpServers(mcpServers, managed) }, null, 2)}\n`
 }
 
 function cursorMcpConfigJson(profile: string, runTokenFile: string | undefined): string {
   const mcpServers: Record<string, unknown> = {}
   // Cursor loads user/project MCP itself. Copying those entries into the plugin
   // would start them twice and bypass Cursor's own disabled-server preferences.
-  for (const server of HERMES_MCP_SERVERS) {
+  for (const server of managedMcpServers()) {
     if (getDisabledManagedMcpServers('cursor', profile).has(server.name)) continue
     mcpServers[server.name] = managedHermesMcpServerConfig('cursor', profile, server.name, server.toolset, runTokenFile)
   }
@@ -1420,9 +1419,11 @@ function codexMcpConfigToml(
   ...externalContents: Array<string | null | undefined>
 ): string {
   const blocks: string[] = [...parseCodexExternalMcpBlocks(...externalContents)]
+  const external = (parseToml(blocks.join('\n')).mcp_servers || {}) as Record<string, unknown>
   const disabledManaged = getDisabledManagedMcpServers(agentId, profile)
-  for (const item of HERMES_MCP_SERVERS) {
+  for (const item of managedMcpServers()) {
     const server = managedHermesMcpServerConfig(agentId, profile, item.name, item.toolset, runTokenFile)
+    if (mergePluginMcpServers(external, { [item.name]: server })[item.name] !== server) continue
     const lines = [
       `[mcp_servers.${item.name}]`,
     ]
@@ -1594,7 +1595,7 @@ function piUserMcpConfig(...existingContents: Array<string | null | undefined>):
 function piMcpConfig(profile: string, runTokenFile: string | undefined, ...externalContents: Array<string | null | undefined>): string {
   const external = parsePiExternalMcpConfig(...externalContents)
   const disabledManaged = getDisabledManagedMcpServers('pi', profile)
-  const mcpServers = Object.fromEntries(HERMES_MCP_SERVERS
+  const mcpServers = Object.fromEntries(managedMcpServers()
     .filter(item => !disabledManaged.has(item.name))
     .map((item) => {
     const server = managedHermesMcpServerConfig('pi', profile, item.name, item.toolset, runTokenFile)
@@ -1619,11 +1620,16 @@ function piMcpConfig(profile: string, runTokenFile: string | undefined, ...exter
       ...external.settings,
       ...PI_RUNTIME_MCP_SETTINGS,
     },
-    mcpServers: {
-      ...external.mcpServers,
-      ...mcpServers,
-    },
+    mcpServers: mergePluginMcpServers(external.mcpServers, mcpServers),
   }, null, 2)}\n`
+}
+
+/** Runtime-neutral managed transport; custom runtimes adapt its configuration themselves. */
+export function getPluginAgentManagedMcpServerConfigs(profile: string, runTokenFile: string): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(managedMcpServers().map(item => {
+    const server = hermesMcpServerConfig(profile, item.name, item.toolset)
+    return [item.name, { ...server, env: { ...server.env, HERMES_WEB_UI_RUN_TOKEN_FILE: runTokenFile } }]
+  }))
 }
 
 export function getCodingAgentManagedMcpServerConfigs(
@@ -1634,7 +1640,7 @@ export function getCodingAgentManagedMcpServerConfigs(
   if (!['claude-code', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode'].includes(id)) return {}
   if (id === 'zcode') return {}
   const disabledManaged = getDisabledManagedMcpServers(id, profile)
-  return Object.fromEntries(HERMES_MCP_SERVERS.map((item) => {
+  return Object.fromEntries(managedMcpServers().map((item) => {
     const server = managedHermesMcpServerConfig(id, profile || 'default', item.name, item.toolset, runTokenFile)
     if (id === 'pi') {
       const requestTimeoutMs = (item.toolset === 'api' || item.toolset === 'plugins') ? 120_000 : item.toolset === 'use' ? 360_000 : 1_860_000
@@ -3169,7 +3175,7 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
       const mcpFile = tool.id === 'zcode' ? undefined : getLiveConfigFileDefinition(tool.id, 'mcp')
       const content = mcpFile ? await safeReadFile(mcpFile.absolutePath) : ''
       const userMcp = content ? JSON.parse(content).mcpServers || {} : {}
-      const nativeMcpServers = { ...userMcp, ...getCodingAgentManagedMcpServerConfigs(tool.id, scope.profile, input.studioMcpTokenFile) }
+      const nativeMcpServers = mergePluginMcpServers(userMcp, getCodingAgentManagedMcpServerConfigs(tool.id, scope.profile, input.studioMcpTokenFile))
       const execution = tool.id === 'zcode'
         ? await resolveZcodeCommand([], await commandEnv(), findCommandPaths, { preferDesktop: process.platform === 'win32' })
         : { command: tool.command, args: [], env: {} }
@@ -3387,8 +3393,8 @@ export async function prepareCodingAgentLaunch(id: string, input: CodingAgentLau
     env = prepared.env
     const mcpFile = tool.id === 'zcode' ? undefined : getLiveConfigFileDefinition(tool.id, 'mcp')
     const content = mcpFile ? await safeReadFile(mcpFile.absolutePath) : ''
-    nativeMcpServers = { ...(content ? JSON.parse(content).mcpServers || {} : {}),
-      ...getCodingAgentManagedMcpServerConfigs(tool.id, scope.profile, input.studioMcpTokenFile) }
+    nativeMcpServers = mergePluginMcpServers(content ? JSON.parse(content).mcpServers || {} : {},
+      getCodingAgentManagedMcpServerConfigs(tool.id, scope.profile, input.studioMcpTokenFile))
   } else if (tool.id === 'antigravity') {
     if (!['chat_completions', 'codex_responses', 'anthropic_messages'].includes(apiMode)) throw Object.assign(new Error('Antigravity scoped API mode is unsupported'), { status: 400 })
     const target = registerCodexProxyTarget({ profile: scope.profile, provider, model, baseUrl, apiKey, apiMode, reasoningEffort,
