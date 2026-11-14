@@ -89,6 +89,13 @@ export interface ClientModelSelection {
 export interface ClientModelPickerOptions {
   current?: Pick<ClientModelSelection, 'provider' | 'model'>
 }
+export interface ClientWorkspaceSelection {
+  profile: string
+  workspace: string
+}
+export interface ClientWorkspacePickerOptions {
+  current?: string
+}
 export interface ClientContext {
   readonly locale?: string
   readonly plugin: Readonly<PluginManifest>
@@ -111,6 +118,8 @@ export interface ClientContext {
     prompt(message: string): Promise<string | null>
     /** Open the host picker for this view's Profile. Cancellation returns null; no settings are changed. */
     selectModel(options?: ClientModelPickerOptions): Promise<ClientModelSelection | null>
+    /** Open the host directory picker. Cancellation returns null; no session workspace is changed. */
+    selectWorkspace(options?: ClientWorkspacePickerOptions): Promise<ClientWorkspaceSelection | null>
     navigate(path: string): void
   }
   lifecycle: PluginLifecycle
@@ -119,6 +128,7 @@ export interface ClientModule { mount(element: HTMLElement, ctx: ClientContext):
 
 
 export interface PluginExtensions {
+  http: { register(interceptor: import('./http').PluginHttpInterceptor): Dispose }
   agents: { register(definition: import('./agents').AgentDefinition): import('./agents').AgentRegistration }
   tools: { register(tool: PluginTool): Dispose }
   commands: { register(command: PluginCommand): Dispose }

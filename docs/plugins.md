@@ -61,8 +61,11 @@ OMP 使用官方 stdio RPC：文本和推理流、原生工具事件、图片、
 开发新插件使用 `node scripts/create-plugin.mjs /absolute/path/my-plugin my-plugin`，生成最小设置页面与 RPC 模板，不再复制演示业务。
 测试时可在插件中心安装夹具的绝对路径，再启用；本地安装复制目录，源码改动后需要重新安装，重载只执行已安装版本。
 
-插件安装支持本地目录、`package@1.2.3` 或 `github:owner/repository#完整40位提交`。
-远程安装禁止生命周期脚本，必须提供编译后的入口。版本必须是精确版本。
+插件安装支持服务端本地绝对目录、npm 精确版本（如 `package@1.2.3`、`@scope/package@1.2.3-rc.1`）或普通 GitHub 仓库链接（如 `https://github.com/owner/repository`，也可带 `.git` 或尾随 `/`）。
+粘贴 GitHub 链接后，Studio 通过 GitHub API 读取默认分支当前提交，再按完整提交安装并记录固定来源；无需手填 hash。这里选择默认分支的源码，不自动选择最新 Release/tag；插件版本以包内 `plugin.json` 为准。
+自动解析仅支持公开仓库的 HTTPS 根地址，不接受凭证、自定义端口、查询参数、片段或 `/tree/...` 等子页面。解析超时、限流、空仓库或无法访问时不会退回可变分支安装，可稍后重试或使用本地目录。仓库移动产生重定向时，请使用新的仓库地址。
+仍支持 `github:owner/repository#完整40位小写提交`，以及 `git+https://gitlab.com/team/repository.git#完整40位小写提交`、`git+https://gitee.com/team/repository.git#完整40位小写提交`；这些固定来源不需要额外查询 GitHub API。
+远程安装禁止生命周期脚本、忽略开发依赖，必须包含 `plugin.json` 和编译后的 JavaScript 入口。npm 不支持无版本包名、`latest` 或版本范围。安装仍需要超级管理员确认信任，且新装第三方插件默认禁用。
 启停、配置、升级、回滚和卸载使用版本号防止同时修改。升级激活失败会恢复旧版本。
 依赖使用 manifest 中的精确版本，启用前必须先启用依赖；禁用依赖前要禁用使用它的插件。
 卸载释放运行资源，但保留数据与历史包目录，方便恢复；它不是清除磁盘数据操作。
@@ -120,7 +123,9 @@ CLI 的 `create/link/dev` 只登记项目，不执行插件，不读取登录 to
 不会被当成已安装的市场版；需要彻底停止使用时仍可直接卸载。两项操作在卡片中明确分开。
 显式卸载后，即使此前从未安装内置版本，列表刷新或宿主重启也不会自动恢复同名内置插件。
 
-开发链接启用期间宿主每秒检查源文件，稳定两次后执行可选的 `npm run build`，再复制到新的运行目录。
+开发链接启用期间宿主每秒检查源文件，只在文件路径或内容变化并稳定两次后执行可选的 `npm run build`，再复制到新的运行目录。
+仅修改时间戳、文件属性或重复保存相同内容不会触发重建；宿主缓存内容摘要，元数据变化时才重新读取文件。
+构建期间发生的源码编辑会在后续检查中继续触发重建，不会因本次构建结束而丢失。
 没有 build 脚本的 JavaScript 模板直接加载；同版本的源码修改也会生效，无需反复提高版本号。
 后端旧实例被释放，前端通过已有插件事件重新挂载；这是整个插件的重载，不保留页面内存状态。
 嵌套模块也从新的运行目录加载，不会继续使用旧 ESM 缓存。每个开发项目保留当前和上一个运行副本。
@@ -451,7 +456,7 @@ ctx.events.on('group.message.delta', event => {
 高频流可覆盖较早事件，插件应按事件 ID 去重并用历史接口恢复状态。观察回调不阻塞原始运行；
 需要拦截时使用 `ctx.extensions.hooks`。自定义 `messages.emit` 发给前端，不重新进入后端 `ctx.events.on`。
 
-前端还可使用 `ctx.state.plugin`、`ctx.host.models`、`ctx.ui.notify/confirm/prompt/navigate`、
+前端还可使用 `ctx.state.plugin`、`ctx.host.models`、`ctx.ui.notify/confirm/prompt/navigate/selectModel/selectWorkspace`、
 `ctx.events.on` 和 `ctx.lifecycle.add`。页面布局类型为 `page`、`settings`、`workspace`、`agent-settings`；
 动态工作区侧栏挂载时的 `ctx.slot` 为 `workspace-sidebar`。这些页面不绑定当前单聊会话，
 需要访问会话时由插件通过 SDK 显式指定 ID，宿主照常检查当前调用者权限。
@@ -511,6 +516,20 @@ Studio 会将插件变更通知所有已启动的 Hermes Worker，包括群聊�
 宿主填入节点任务及上游输出。节点复用现有审批、分支、循环、状态、重试和取消机制，
 结果保存到节点会话。调度工作流使用调度创建者身份；没有有效用户身份的任务不能调用插件。
 外部系统可通过已认证的 `POST /api/studio/plugins/:id/invoke` 调用动作。
+
+## 入站 HTTP 拦截与改写
+
+插件声明 `http` 权限，使用 `ctx.extensions.http.register({ name, priority?, onRequest?, onResponse? })`。
+请求体解析后、鉴权及路由前调用 onRequest，可修改 method/url/headers/body；返回
+`{status,headers,body}` 可直接响应。路由返回后、Koa 写出前调用 onResponse，可修改状态码、头及内容。
+请求按 priority 升序（默认 0），同值按插件 ID、名称排序；响应按已进入的拦截器逆序执行。
+禁用、卸载、重载自动释放注册并取消正在运行的回调，单次回调最长 30 秒。
+
+HTTP 权限覆盖经过中间件的所有入站账号与公开流量；鉴权前没有用户身份，不继承激活管理员的
+host/state 权限。鉴权后使用真实请求账号/Profile。SDK 内部 HTTP 调用保留原有鉴权并跳过再次拦截以免递归。
+Buffer/Readable 保留进程内类型，可转换流而无需缓冲；原生 res 已直接写出的 SSE/代理响应不再进入
+响应回调。CORS 提前响应、请求体解析错误、WebSocket 升级和外部出站 HTTP 不在此接入点。
+示例、精确字段和返回规则随 SDK 分发，见 [能力指南](../packages/plugin-sdk/docs/STUDIO_CTX.md#入站-http-请求与响应)。
 
 ## 运行与权限边界
 

@@ -31,6 +31,9 @@
 
 `views` 声明页面布局，支持 `page`、`settings`、`workspace`、`agent-settings`；声明页面不会自动产生全局侧栏入口。
 `navigation.main` 和 `navigation.settings` 分别显式声明主侧栏与设置侧栏入口，各项包含 `viewId`、必填 `icon`，以及可选 `title/order`。
+`navigation.main` 仅注册可选入口，不会在安装、启用或升级时自动显示到外层导航栏。
+用户从头像菜单打开「导航栏设置」后，手动添加已启用插件的已注册入口；仅有 `views`、工具、Agent 设置页或 `workspace.sidebar` 不会进入候选列表。
+选择和顺序按 Studio 登录账号保存，独立于 Profile。插件停用、失败或移除注册后入口暂时隐藏，原选择保留；恢复可用后按用户原有顺序显示。`navigation.settings` 保持原有设置侧栏行为。
 两类入口可独立指向同一已声明页面；省略某个列表或设置为空数组，表示该侧栏不展示入口，页面和 Agent 设置按钮仍可用。
 设置侧栏只接受宿主命名线条 icon；主侧栏还可使用包内 PNG/JPEG/WebP/GIF 或 base64 图片，均不得省略 icon 或依赖插件头像回退。
 命名 icon 清单见 SDK 的 `PLUGIN_ICON_PATHS`。`workspace` 和 `agent-settings` 页面的专属配置侧栏也必须提供命名 `views[].icon`。
@@ -40,10 +43,17 @@
 页面布局由 views[].slot 声明，全局入口独立由 navigation 声明。Agent 设置回调必须指向 agent-settings 视图。
 每个视图由同一个客户端入口按 `ctx.view / slot / location` 渲染。路由变化会重新挂载。
 前端在不透明来源 iframe 内运行，不共享宿主 DOM、localStorage、登录 token。
+宿主为该文档提供与常规页面共用的细滚动条和透明轨道，颜色及滑块圆角随宿主主题更新，保留文档、内部容器和表单控件所需的滚动。
+插件内容窗口不附加宿主卡片边框、圆角、阴影或根节点内边距，随可用区域伸缩；顶部导航、管理入口及必要侧栏仍由宿主提供。
+插件自行决定内容布局和留白，可用视口单位填满窗口，并自行设置内部滚动区域；默认主题变量继承所在内容或侧栏区域。
+插件自己的 CSS 仍可覆盖默认样式；嵌套的独立 iframe 文档不继承这些规则，需要由其内容方适配，宿主不会跨来源访问或修改它们。
 前端 bundle 必须自包含，框架可打包，资源需内联；iframe 不允许直接网络连接。
 宿主业务 API 使用 `ctx.host`，插件业务使用 `ctx.rpc.call`；不能通过相对模块或远程脚本加载额外客户端包。
 `ctx.ui.selectModel()` 经页面桥接打开宿主现有的通用模型选择器；模型目录绑定该页面的 Profile，
 凭证和供应商地址留在宿主，只回传选中的模型引用。插件自行决定保存和调用，页面结束时关闭选择器。
+`ctx.ui.selectWorkspace({ current })` 同样通过桥接打开宿主目录选择器，复用目录树、手动路径、账号收藏和最近记录。
+确认只返回 `{ profile, workspace }`，取消返回 null；不自动绑定会话或修改插件配置。收藏是用户显式操作，
+最近记录只在确认后更新。Profile/路由变化或页面销毁会关闭选择器，旧页面不能将结果交给新页面。
 
 ## 权限与数据
 
@@ -77,7 +87,7 @@ Agent 使用 `agentApiVersion: 1` 与 `features`。只实现这一份最新契�
 | 模块 | 唯一职责 |
 | --- | --- |
 | `host` | 调用宿主 models/agents/sessions/bots/groupChats/workflows/files/browser，request 是受限 JSON 逃生口 |
-| `extensions` | 注册 agents/tools/commands/hooks/actions/rpc；不承担宿主目录查询 |
+| `extensions` | 注册 agents/tools/commands/hooks/actions/rpc/http；不承担宿主目录查询 |
 | `state` | 显式 plugin/user/profile/session/agentSession 数据作用域 |
 | `events` | 订阅宿主业务事件；只观察，不修改原业务 |
 | `messages` | 后端向插件页面发消息、前端订阅；不回流业务事件总线 |
@@ -86,10 +96,21 @@ Agent 使用 `agentApiVersion: 1` 与 `features`。只实现这一份最新契�
 | `ui` | 前端提示、确认、输入、导航、模型选择器 |
 | `lifecycle` | add/acquire 统一登记同步与异步资源；signal 是上下文根部的取消元数据 |
 
-源码按 core/state/host/browser/sessions/bots/contexts/agents 分文件，index.ts 只作为统一导出入口。
+源码按 core/state/host/browser/sessions/bots/contexts/agents/http 分文件，index.ts 只作为统一导出入口。
 插件包管理和 Agent 引擎维护属于宿主管理面；注册 Agent 的插件实现自己的管理回调。
 六种上下文分别是 PluginContext、RunContext、ClientContext、AgentManagementContext、AgentSessionContext、AgentRunContext。
 身份、配置、路径和取消信号是上下文元数据；功能入口不得再放置同义的根级别名。
+
+## 后端 HTTP 拦截
+
+清单声明独立 `http` 权限，通过 `extensions.http.register` 注册服务端入站请求和响应拦截器。
+中间件位于通用请求体解析之后、公开与鉴权路由之前；覆盖经过该位置的 API 和静态页面请求。
+请求回调升序执行，响应回调按已进入的拦截器逆序执行；同优先级按插件 ID、注册名称排序。
+请求回调可以修改路由输入，也可以直接返回完整响应。禁用、重载、卸载释放注册并取消未结束的回调。
+这是可信后端插件的全局 HTTP 权限，可接触尚未鉴权的请求及凭证头，不能当作用户级数据授权。
+鉴权前的回调没有调用者身份，闭包中的 `ctx.host/state/identity` 也不会继承激活管理员；
+鉴权后使用实际请求账号与 Profile。SDK 的内部 HTTP 传输保留原有鉴权并跳过再次拦截，避免递归。
+HTTP body 为进程内 Koa 数据，可保留 Buffer 和流，不经过前端 JSON 桥；详细契约见能力与返回指南。
 
 ## 完整单聊与 BOT
 

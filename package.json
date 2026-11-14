@@ -1,6 +1,6 @@
 {
   "name": "ekko-studio",
-  "version": "0.8.22",
+  "version": "0.8.23",
   "description": "Ekko Studio is a local-first AI workspace for multi-agent chat, coding, and visual workflows, available on desktop and the web.",
   "repository": {
     "type": "git",
@@ -108,6 +108,7 @@
     "smol-toml": "^1.8.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "vue-draggable-plus": "0.6.1",
     "werift": "0.24.4",
     "yaml": "^2.9.0"
   },

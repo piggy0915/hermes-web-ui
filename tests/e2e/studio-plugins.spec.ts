@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { resolve } from 'node:path'
+import { mockSavedNavigation } from './fixtures/navigation-settings'
 
 test('manages a plugin and runs an isolated frontend through authenticated API and RPC', async ({ page }, testInfo) => {
   let revision = 0, installed = false, enabled = false, version = '1.0.0', previousVersion: string | undefined
@@ -48,16 +49,24 @@ test('manages a plugin and runs an isolated frontend through authenticated API a
   })
   const entry = '/@fs/' + resolve('tests/e2e/fixtures/studio-plugins.ts').replaceAll('\\', '/').replace(/^\//, '')
   await page.route('**/__studio_plugins__', route => route.fulfill({ contentType: 'text/html', body: `<div id="app"></div><script type="module" src="${entry}"></script>` }))
+  await mockSavedNavigation(page, [])
   await page.goto('/__studio_plugins__')
   await expect(page.getByText('尚未安装 Studio 插件')).toBeVisible()
   await page.getByRole('button', { name: '安装插件', exact: true }).click()
   const install = page.getByRole('button', { name: '安装', exact: true })
   await expect(install).toBeDisabled()
-  await page.getByRole('textbox', { name: '绝对目录、package@version 或 github:owner/repo#commit' }).fill('/tmp/notes')
+  await page.locator('.plugin-install-modal').getByRole('textbox').fill('/tmp/notes')
   await page.getByRole('checkbox').check(); await install.click()
   await page.getByRole('button', { name: '启用', exact: true }).click()
   await expect(page.locator('.plugin-card')).toHaveCount(1)
   await expect(page.locator('iframe')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail').getByRole('link', { name: 'Notebook', exact: true })).toHaveCount(0)
+  await page.locator('.page-sidebar-account-btn').click()
+  await page.getByRole('button', { name: '导航栏设置', exact: true }).click()
+  const navigation = page.locator('.navigation-settings-modal')
+  await navigation.getByRole('button', { name: '添加Notebook', exact: true }).click()
+  await expect(navigation.locator('.navigation-settings-footer')).toContainText('所有更改已保存')
+  await page.keyboard.press('Escape')
   await expect(page.locator('.studio-navigation-rail').getByRole('link', { name: 'Notebook', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '打开', exact: true }).click()
   const frame = page.frameLocator('iframe')
@@ -110,7 +119,7 @@ test('manages a plugin and runs an isolated frontend through authenticated API a
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.getByRole('button', { name: '禁用', exact: true }).click()
   await expect(page.locator('iframe')).toHaveCount(0)
-  await expect(page.locator('.studio-navigation-rail__plugins a')).toHaveCount(0)
+  await expect(page.locator('.studio-navigation-rail__plugin')).toHaveCount(0)
   await page.getByRole('dialog').getByRole('button', { name: '卸载', exact: true }).click()
   await page.getByRole('button', { name: '确定', exact: true }).click()
   await expect(page.getByText('尚未安装 Studio 插件')).toBeVisible()

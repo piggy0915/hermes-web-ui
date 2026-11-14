@@ -2,6 +2,8 @@
 import PluginWorkspaceSidebar from "@/components/layout/PluginWorkspaceSidebar.vue";
 import { usePluginCatalog, pluginPages } from "@/composables/usePluginCatalog";
 import PluginNotifications from '@/components/plugins/PluginNotifications.vue'
+import NavigationSettingsModal from '@/components/layout/NavigationSettingsModal.vue'
+import { useNavigationStore } from '@/stores/navigation'
 import { ensureRemoteBrowserRelay, stopRemoteBrowserRelay } from '@/composables/useRemoteBrowserRelay'
 import { deploymentUrl } from '@/utils/deployment-url'
 import {
@@ -110,9 +112,11 @@ const { t, locale } = useI18n();
 const naiveLocale = computed(() => naiveLocaleFor(locale.value));
 const naiveRtl = computed(() => naiveRtlFor(locale.value));
 const appStore = useAppStore();
+const navigation = useNavigationStore();
 const profilesStore = useProfilesStore();
 watch(() => profilesStore.activeProfileName, async () => { await stopRemoteBrowserRelay(); await ensureRemoteBrowserRelay() });
 const route = useRoute();
+const isPluginPage = computed(() => ['studio.pluginPage', 'studio.pluginSettings', 'studio.pluginAgentSettings'].includes(String(route.name)));
 const { snapshot: pluginSnapshot, profile: pluginProfile } = usePluginCatalog(computed(() => ['studio.pluginPage', 'studio.pluginAgentSettings'].includes(String(route.name))));
 const workspacePlugin = computed(() => {
   if (!['studio.pluginPage', 'studio.pluginAgentSettings'].includes(String(route.name))) return undefined;
@@ -336,6 +340,7 @@ useKeyboard();
   >
     <NMessageProvider>
       <PluginNotifications />
+      <NavigationSettingsModal v-model:show="navigation.settingsOpen" />
       <AuthEventListener />
       <NDialogProvider>
         <NNotificationProvider>
@@ -402,6 +407,7 @@ useKeyboard();
                 class="app-layout"
                 :class="{
                   'app-layout--shell-sidebar': usesShellSidebar,
+                  'app-layout--plugin': isPluginPage,
                   'no-sidebar': isLoginPage || !showAppSidebar,
                   'has-hermes-config-sidebar': usesHermesConfigSidebar,
                   'has-ekko-config-sidebar': usesEkkoConfigSidebar,
@@ -527,6 +533,13 @@ useKeyboard();
   max-width: 100%;
   overflow: hidden;
   background-color: var(--theme-card-bg, $bg-card);
+
+  &--plugin {
+    --studio-content-gutter: 0px;
+    --studio-content-radius: 0px;
+    --theme-content-radius: 0px;
+    --theme-content-shadow: none;
+  }
 
   &.no-sidebar {
     display: block;

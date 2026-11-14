@@ -10,6 +10,8 @@ import { pluginFrameDocument } from '@/plugins/frame'
 import { assertJson } from '../../../../plugin-sdk/src'
 import ModelCascader from '@/components/hermes/models/ModelCascader.vue'
 import { usePluginModelPicker } from '@/composables/usePluginModelPicker'
+import { usePluginWorkspacePicker } from '@/composables/usePluginWorkspacePicker'
+import WorkspacePickerModal from '@/components/common/WorkspacePickerModal.vue'
 
 const props = defineProps<{ plugin: InstalledPlugin; profile: string; view: string; slot: string; sessionId?: string; data?: Json; expanded?: boolean; sidebar?: boolean }>()
 const frame = ref<HTMLIFrameElement>()
@@ -20,6 +22,8 @@ const route = useRoute()
 const documentSource = pluginFrameDocument()
 const modelPicker = usePluginModelPicker()
 const { request: modelPickerRequest } = modelPicker
+const workspacePicker = usePluginWorkspacePicker()
+const { request: workspacePickerRequest } = workspacePicker
 let release: (() => void) | undefined
 
 watch(() => [frame.value, props.plugin, props.profile, props.view, props.sessionId, props.data, route.fullPath, locale.value] as const, async () => {
@@ -54,7 +58,7 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
   }
   function themeSnapshot() {
     const computed = getComputedStyle(element), theme: Record<string, string> = {}
-    for (const key of ['--text-primary', '--text-secondary', '--text-muted', '--bg-card', '--bg-secondary', '--border-color', '--accent-primary']) theme[key] = computed.getPropertyValue(key)
+    for (const key of ['--text-primary', '--text-secondary', '--text-muted', '--bg-card', '--bg-secondary', '--border-color', '--accent-primary', '--radius-component']) theme[key] = computed.getPropertyValue(key)
     return theme
   }
   const appearance = new MutationObserver(() => { if (started) send({ type: 'theme', theme: themeSnapshot() }) })
@@ -100,6 +104,7 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
         case 'confirm': value = await prompt(String(args.message).slice(0, 2000), false); break
         case 'prompt': value = await prompt(String(args.message).slice(0, 2000), true); break
         case 'select-model': value = await modelPicker.open(profile, args, controller.signal); break
+        case 'select-workspace': value = await workspacePicker.open(profile, args, controller.signal); break
         case 'navigate':
           if (typeof args.path !== 'string' || !/^\/(?:hermes|studio|ekko)\//.test(args.path) || args.path.includes('\\')) throw new Error('Invalid Studio route')
           await router.push(args.path); window.dispatchEvent(new Event('studio.plugin.navigate')); value = null; break
@@ -118,7 +123,7 @@ onBeforeUnmount(() => release?.())
 </script>
 
 <template>
-  <section class="plugin-frame" :class="{ 'plugin-frame--expanded': expanded, 'plugin-frame--sidebar': sidebar }" data-theme-surface="card">
+  <section class="plugin-frame" :class="{ 'plugin-frame--expanded': expanded, 'plugin-frame--sidebar': sidebar }">
     <NAlert v-if="error" type="error">{{ error }}</NAlert>
     <iframe ref="frame" :title="`${plugin.manifest.name}: ${view}`" sandbox="allow-scripts" referrerpolicy="no-referrer" :style="expanded ? undefined : { height: `${height}px` }" />
     <ModelCascader v-if="modelPickerRequest" :show="true" :groups="modelPickerRequest.catalog.groups"
@@ -126,13 +131,13 @@ onBeforeUnmount(() => release?.())
       :custom-models="modelPickerRequest.catalog.custom_models || {}" :display-name="modelPicker.displayName"
       :title="`${plugin.manifest.name} · ${t('models.selectModel')}`" :close-on-select="false"
       @select="modelPicker.choose" @update:show="show => { if (!show) modelPicker.cancel() }" />
+    <WorkspacePickerModal v-if="workspacePickerRequest" :current="workspacePickerRequest.current"
+      :title="`${plugin.manifest.name} · ${t('workflow.workspace.title')}`" @select="workspacePicker.choose" @cancel="workspacePicker.cancel" />
   </section>
 </template>
 <style scoped lang="scss">
-@use '@/styles/variables' as *;
-.plugin-frame { overflow: hidden; min-width: 0; border: 1px solid $border-light; border-radius: $radius-lg; }
-.plugin-frame--sidebar { border: 0; border-radius: 0; }
-.plugin-frame--expanded { flex: 1; display: flex; flex-direction: column; min-height: 360px; }
+.plugin-frame { overflow: hidden; min-width: 0; }
+.plugin-frame--expanded { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .plugin-frame--expanded iframe { flex: 1; min-height: 0; height: 100%; }
 iframe { display: block; width: 100%; border: 0; }
 </style>

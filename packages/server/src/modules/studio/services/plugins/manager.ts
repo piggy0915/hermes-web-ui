@@ -27,6 +27,12 @@ export class PluginManager {
   private closing = false
   private ports: PluginPorts
   registeredAgents() { return [...this.runtimes.values()].filter(runtime => packagePresent(runtime.record)).flatMap(runtime => [...runtime.agents.values()]) }
+  httpInterceptors() {
+    return [...this.runtimes.values()].filter(runtime => !runtime.effects.controller.signal.aborted && packagePresent(runtime.record))
+      .flatMap(runtime => [...runtime.http.values()].map(interceptor => ({ runtime, interceptor })))
+      .sort((a, b) => (a.interceptor.priority ?? 0) - (b.interceptor.priority ?? 0)
+        || a.runtime.record.manifest.id.localeCompare(b.runtime.record.manifest.id) || a.interceptor.name.localeCompare(b.interceptor.name))
+  }
   constructor(home: string, ports: PluginPorts) {
     this.store = new PluginStore(home)
     this.ports = { ...ports, emit: (id, event) => { this.publish(id, event, event.audience === 'plugin'); ports.emit(id, event) },
@@ -98,10 +104,10 @@ export class PluginManager {
         if (options?.expectedVersion && pkg.manifest.version !== options.expectedVersion) throw new PluginError('Update package version does not match the published release')
         const old = state.records[id]
         if (old && !expectedId) throw new PluginError('Plugin already installed; use Update', 'PLUGIN_EXISTS', 409)
-        const next: PluginRecord = { manifest: pkg.manifest, directory: pkg.directory, source, installedAt: Date.now(), enabled: options?.enabled ?? old?.enabled ?? false,
+        const next: PluginRecord = { manifest: pkg.manifest, directory: pkg.directory, source: pkg.source, installedAt: Date.now(), enabled: options?.enabled ?? old?.enabled ?? false,
           ...(options?.developmentDirectory ? { developmentDirectory: options.developmentDirectory } : {}),
           config: configuration(pkg.manifest.configSchema, old?.config || {}, !!(options?.enabled ?? old?.enabled)), ...(old ? { previous: previousVersion(old) } : {}) }
-        if (source.startsWith('builtin:')) (state.builtinVersions ||= {})[id] = pkg.manifest.version
+        if (pkg.source.startsWith('builtin:')) (state.builtinVersions ||= {})[id] = pkg.manifest.version
         await this.replace(identity, state, id, next)
         return this.snapshot(identity)
       } catch (e) { await pkg.dispose(); throw e }

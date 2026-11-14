@@ -41,7 +41,7 @@
 | paths.runtimeDir | string；AgentSession/Run | 此原生 Agent 会话的绝对运行目录，可保存原生会话文件 |
 | paths.workspaceDir | string；AgentSession/Run | 实际会话工作区绝对路径；与 runtimeDir 含义不同 |
 | host | HostApi；Plugin/Run/Client | 八个业务模块及受限 request，字段见 HOST_API.md；每次按真实身份授权 |
-| extensions | PluginExtensions；PluginContext | 注册 agents/tools/commands/hooks/actions/rpc；具体注册字段见下文 |
+| extensions | PluginExtensions；PluginContext | 注册 agents/tools/commands/hooks/actions/rpc/http；具体注册字段见下文 |
 | state | PluginState；Plugin/Run/Client | 显式存储作用域，下文说明隔离边界；AgentRun 一定有 agentSession |
 | events | on(pattern, listener)；Plugin/Client | 业务观察；需要 events；精确名称、`*` 或 `.*` 前缀。不是修改原业务的钩子 |
 | scheduler | every(id, intervalMs, action, input?)；Plugin | 需要 automation，apply 期间登记；intervalMs 是 1000–2147483647 毫秒的安全整数；input 默认 {}，action 必须已注册；同一任务不重叠，重启不补跑 |
@@ -59,7 +59,7 @@
 | data | Json；Client | 视图调用方提供的页面数据，未提供为 null；没有隐含固定业务字段，插件需声明/校验自己依赖的结构 |
 | rpc.call | (name,input?) => Promise<Json>；Client | name 是本插件 RPC 名，input 缺省变为 null；失败 reject，不自动重试 |
 | messages.on | (type,listener) => Dispose；Client | 接收插件自定义消息；与 events 的 business 通道分开 |
-| ui | Client | notify(message,level)、confirm(message)、prompt(message)、navigate(path)、selectModel(options?)；confirm 返回 boolean，prompt 返回 string 或取消时 null；navigate 是宿主路径 |
+| ui | Client | notify(message,level)、confirm(message)、prompt(message)、navigate(path)、selectModel(options?)、selectWorkspace(options?)；confirm 返回 boolean，prompt 返回 string 或取消时 null；navigate 是宿主路径 |
 | mode? | scoped/global；AgentManagement | 只有宿主绑定管理模式时提供；不得假设存在 |
 | progress | ({message,percent?}) => void；AgentManagement | message 为状态文本；percent 是可选进度提示，当前宿主仅记 message 日志，不保证显示百分比，不是完成回执 |
 | mode | scoped/global；AgentSession/Run | 会话绑定模式，改变后按新实例隔离；不增加权限 |
@@ -85,6 +85,14 @@ ui.selectModel 的 options 仅有可选 current:{provider,model}，两项都是�
 codex_responses、anthropic_messages、bedrock_converse、codex_app_server。取消为 null，错误 reject。
 选择器不保存配置、不发模型请求，不回传 key 或供应商地址。
 
+ui.selectWorkspace 的 options 仅有可选 current:string，缺省或空字符串表示未选择；上限 4096 字符，不允许 NUL。
+确认返回 `{profile:string,workspace:string}`：profile 由宿主绑定，workspace 为去除首尾空白的非空目录字符串。
+目录树及收藏/最近项提供宿主路径，手动路径沿用现有目录输入；此选择器不创建目录，路径有效性和访问权限
+仍由后续使用它的宿主业务方法检查。空选择不能确认；取消或关闭返回 null，参数错误或重复打开 reject。
+页面上下文失效会关闭选择器，并由页面桥接以页面已关闭错误终止未完成请求，与其他页面 API 一致。
+不自动修改插件配置或现有会话。收藏/最近目录属于当前账号，非 Profile；显式收藏立即保存，最近使用仅在确认后记录。
+选择器本身无需插件额外声明 api.read/api.write；插件后续通过 host API 使用所选路径仍须声明相应权限。
+
 ## Studio 读取的清单与注册数据
 
 ### plugin.json
@@ -93,7 +101,7 @@ codex_responses、anthropic_messages、bedrock_converse、codex_app_server。取
 | --- | --- | --- |
 | id/name/version/apiVersion | 必填 string/string/string/1 | id 遵循标识符规则；name 非空且最多 160 字符；version 是精确 x.y.z，可带预发布后缀，须与 package.json 一致 |
 | server/client | 至少一项，string | 包内相对 .js/.mjs 成品路径，禁止绝对路径及 ..；server 导出 apply，client 导出 mount；安装不构建源码 |
-| permissions | 必填字符串数组，可空 | api.read、api.write、tools、commands、events、hooks、automation、ui、storage.client、agents、browser.cdp；旧 capabilities 不接受 |
+| permissions | 必填字符串数组，可空 | api.read、api.write、tools、commands、events、hooks、automation、ui、storage.client、agents、browser.cdp、http；旧 capabilities 不接受 |
 | description? | string | 非空，最多 4000 字符 |
 | author? | {name:string,url?:string} | name 非空最多 200 字符，url 规则同下 |
 | repository/homepage/documentation/issues/changelog? | string | HTTP(S) URL，无账号密码，最多 2048 字符 |
@@ -105,7 +113,7 @@ codex_responses、anthropic_messages、bedrock_converse、codex_app_server。取
 | mcp? | {name:string} | 需 tools；名称 1–64 字符，字母开头，仅小写字母数字下划线连字符；默认共享 ekko-studio-plugins；独立名称不可占用宿主前缀或已安装名称 |
 | views? | PluginView[] | 最多 50 项，无重复 id；每项 id/title/slot 必填，title 非空最多 160；slot 为 page/settings/workspace/agent-settings |
 | views[].icon/order? | string / 安全整数 | workspace/agent-settings 必须有宿主命名 icon；其他允许合法图片；order 为 -10000…10000 |
-| navigation? | {main?:Entry[],settings?:Entry[]} | 每组最多 50 项，省略不显示对应全局入口 |
+| navigation? | {main?:Entry[],settings?:Entry[]} | 每组最多 50 项；main 仅注册候选入口，用户须在头像菜单的「导航栏设置」手动添加；省略不产生对应入口 |
 | Entry.viewId/icon | 必填 string | 指向已声明且在本组不重复的视图；icon 不可省略，settings 只接受命名图标，main 还允许合法图片 |
 | Entry.title/order? | string / 安全整数 | title 默认视图标题，非空最多 160；order 为 -10000…10000 |
 | workspace? | {sidebar:string} | sidebar 是独立动态侧栏视图 ID，不得与 views 中的 ID 相同，且必须已有 workspace 页面 |
@@ -130,7 +138,20 @@ secret=true 从前端配置移除；前端未提交该字段时保存旧密钥�
 | actions | name、description、inputSchema、execute(input,run) | 需 automation；返回插件自定 JSON，供工作流消费 |
 | rpc | register(name,handler(input,run)) | input 为 JSON，返回 JSON；输入/输出/存储业务结构写 contracts/plugin.json 并调用校验辅助函数 |
 | hooks | name、handler(value,run) | priority 默认 0，有限 number，升序；四种 hook 见能力指南，返回 value?/deny?；deny 时拒绝，不能更换工具名称 |
+| http | name，onRequest/onResponse 至少一项 | 需 http；priority 默认 0，有限 number，请求升序、响应逆序，同优先级按插件 ID 和 name；返回 Dispose |
 | agents | AgentDefinition，见下表 | 需 agents，只能 apply 时注册；重复局部 ID 拒绝，返回完整 ID 与异步 dispose |
+
+### HTTP 进程内结构
+
+| 结构 | 字段与约束 |
+| --- | --- |
+| PluginHttpInterceptor | name 为局部标识符；priority 可选有限 number 默认 0；onRequest(request,http)/onResponse(response,http) 至少一项 |
+| PluginHttpRequest | method 为 HTTP token；url 为 `/path?query`，禁止绝对 URL、空白、反斜杠及片段；headers 为小写键的 string/string[] 字典；body 为已解析数据或 undefined |
+| PluginHttpResponse | status 为 100–999 整数；headers 字典必填可空；body 字段必填，接受 Koa JSON/text/Buffer/Readable/null/undefined |
+| PluginHttpContext | originalUrl 为最初路径；request 为当前请求快照；identity 仅在鉴权后可用，含 userId/profile/surface:http；signal 随连接断开、插件释放或 30 秒回调超时取消 |
+
+这些对象仅在后端进程内传递，不进入 RPC JSON 校验或前端桥接。onRequest 返回 void 继续，
+返回完整 PluginHttpResponse 短路；onResponse 原地修改并返回 void。流式与已提交响应边界见 STUDIO_CTX。
 
 ## Agent 字段字典
 
