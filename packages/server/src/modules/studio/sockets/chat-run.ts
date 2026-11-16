@@ -1,3 +1,5 @@
+import { bindProviderSocket } from '../public/provider-account'
+import { stripLegacyProviderCredential } from '../contracts/legacy-provider-credential'
 import { respondAgentInteraction } from '../services/agents/interactions'
 import { personDisplayPage, personDisplayEvents, personDisplayBackgroundTasks, personDisplayEvent } from '../services/chat-run/person-display'
 import { personSessionIds } from '../repositories/person-session-store'
@@ -873,6 +875,7 @@ export class ChatRunSocket {
   // --- Connection handler ---
 
   private onConnection(socket: Socket) {
+    bindProviderSocket(socket)
     const shared = socket.data.sessionShare as SessionShareAccess | undefined
     this.sessionStateSync.attach(socket)
     if (shared) bindSessionShareSocket(socket, shared, () => {
@@ -1072,6 +1075,7 @@ export class ChatRunSocket {
       reasoning_effort?: string
       push_enabled?: boolean
     }) => {
+      stripLegacyProviderCredential(data)
       const releaseAdmission = await this.acquireRunAdmission(data.session_id)
       try {
         const pushSnapshot = data.push_snapshot

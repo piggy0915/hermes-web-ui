@@ -3,6 +3,8 @@
 所有 JSON 值都必须可序列化：禁止 undefined、NaN、Infinity、函数、BigInt、循环引用和未编码的二进制。
 生命周期回调允许返回 void，这是与普通 JSON RPC 的区别。错误使用 Error 或对应的明确失败结构，不能伪造成功。
 可选字段应省略，不写 undefined；JSON 边界先检查再序列化，错误值不会静默删除或转成 null。
+
+宿主对 `context.transform` 输入省略可选 undefined 对象字段，不改变插件回传的规则。identity hook 应返回 `{ value }`（保持不变也可返回 `{}`），不能直接返回消息数组；回传中的 undefined、函数、非有限数、循环引用等仍会被拒绝。
 具体字段的必填、可空、数值单位与范围见 [FIELD_REFERENCE.md](FIELD_REFERENCE.md)。
 宿主定义的 Agent 状态、目录、更新、最终结果与流事件均执行字段校验；错误枚举、未知协议字段或缺少必填字段会拒绝。
 
@@ -18,7 +20,7 @@
 | 自动化动作 execute | JSON，结构应在插件契约中声明，供工作流消费。 |
 | hooks handler | `{ value?: Json, deny?: string }`；value 替换内容，deny 拒绝；不用修改时返回空对象。 |
 | HTTP onRequest | 原地修改 request 后返回 void 继续；返回 `{status,headers,body}` 直接响应并停止后续请求回调和路由。 |
-| HTTP onResponse | 原地修改 response，返回 void/Promise<void>；不返回替代对象。 |
+| HTTP onResponse | 在发送响应前原地修改 response，返回 void/Promise<void>；不返回替代对象。网关 SSE 的 body 为 Readable，可接 Transform；此回调不是流传输结束通知。 |
 | 业务观察 handler | void/Promise<void>；事件不能通过返回值修改原业务。 |
 | messages.emit | 传事件名、JSON data、可选 audience；没有业务返回值。 |
 | 前端 ui.selectModel | 宿主返回 `{profile,provider,model,apiMode?}`，关闭或取消返回 null；model 为规范 ID，不含凭证。调用方自行通过 RPC 保存；加载失败或重复打开时 Promise reject。 |

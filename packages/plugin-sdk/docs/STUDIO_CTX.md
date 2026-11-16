@@ -18,6 +18,12 @@ paths.dataDir 保存稳定插件私有文件；Agent paths.runtimeDir/workspaceD
 权限不因 global/scoped 模式扩大；global 使用插件原生配置，scoped 使用宿主注入的短期模型代理，不暴露上游 key。
 同一 Agent 会话实例串行运行，按 Agent、账号、Profile、会话和模式隔离。
 
+RPC、事件及动作回调中创建的定时器或 HTTP 服务会继承该调用的异步上下文，闭包里的 ctx.host/state/signal
+也绑定该调用；回调结束后继续读取会被取消。ctx.lifecycle 负责资源清理，不会延长调用或切换身份。
+需要独立页面持续取数时，可在 apply 期间注册 scheduler action，在每次动作内 await run.host 读取并更新缓存，
+独立 HTTP 服务只读取缓存。直接使用插件级 ctx.host 的长驻服务应在 apply 阶段启动，不在短期 RPC 内启动。
+后台动作需要 automation，读取接口需要 api.read；定时任务使用激活管理员的绑定 Profile，且不依赖插件页面打开。
+
 ## 宿主业务模块
 
 | host 分组 | 方法 |
@@ -39,6 +45,8 @@ sessions.run 默认启动或入队后返回；wait:true 等待终态但仍受普
 
 extensions.agents/tools/commands/hooks/actions/rpc/http.register 注册插件提供给宿主的能力。
 工具执行返回 ToolResult；commands 注册 /插件id:命令；hooks 只在 Ekko 支持 input.transform/context.transform/tool.before/tool.after。
+
+`context.transform` 的宿主输入会复制为 JSON：对象中值为 undefined 的可选数据字段会省略，不修改原消息；数组中的 undefined 或空位仍会拒绝，不会变成 null。其余非 JSON 值仍会报错。此转换只用于宿主构造的 context 输入，不用于插件回传或其他 hook。
 Agent 注册返回带完整 id 和 dispose 的句柄，其他注册返回 disposer。
 events.on 支持精确名称、前缀及 *，业务事件是有界内存观察流；离线恢复需查询历史并幂等处理。
 messages.emit 默认发给当前调用者，audience=plugin 广播本插件所有账号/Profile 页面，前端通过 messages.on 接收。
@@ -53,10 +61,10 @@ const selected = await ctx.ui.selectWorkspace({ current: savedWorkspace || '' })
 if (selected) await ctx.rpc.call('save-workspace', selected)
 ```
 页面包括 page/settings/workspace/agent-settings 和动态 workspace-sidebar，navigation.main/settings 独立声明入口。
-iframe 不共享宿主 DOM、localStorage 或登录 token；使用宿主主题变量，不直接联网。
-本地音频可使用内联 data/iframe 内 Blob URL，CSP 继续阻止远程媒体和直接 fetch；
-播放不增加 manifest 权限、不解除沙箱。插件处理点击播放、自动播放拒绝与资源清理，
-环境限制和 HTTP 页面说明见 `ARCHITECTURE.md` 的前端隔离说明。
+iframe 使用同源独立文档，不设置 sandbox，也不限制直接联网和资源来源；可信前端可访问宿主 DOM 和浏览器存储。
+使用宿主主题变量；业务调用通过 ctx.host/ctx.rpc，仍由宿主检查插件权限、用户与 Profile。
+音视频可使用远程 URL、内联 data 或 iframe 内 Blob URL；浏览器的 CORS、安全上下文和自动播放策略仍适用。
+插件处理点击播放、自动播放拒绝与资源清理；环境限制和 HTTP 页面说明见 `ARCHITECTURE.md`。
 主题桥同步文本、强调色、状态色、卡片/输入底色、边框，以及 `--font-family`、`--font-size-base`、
 `--spacing-scale`、`--line-height`、`--letter-spacing`、`--border-width`、`--control-height` 和 `--radius-component`。
 `--studio-color-scheme` 为 light/dark；`--theme-card-*`、`--theme-input-*`、`--theme-overlay-*` 提供
@@ -121,8 +129,16 @@ body 保留 Koa 支持的 Buffer 和 Readable；可自行接 Transform 转换流
 已通过原生 res 直接写出的 SSE/代理响应不再进入 onResponse；WebSocket/Socket.IO 升级不属于该能力。
 CORS 提前返回、解析器拒绝的请求及在此中间件之前终止的请求也不会进入拦截。
 该能力只处理入站 HTTP，不改变 Studio 对模型或外部服务的出站 HTTP。
+统一模型网关 `/api/ekko-studio/models/*` 也经过此中间件，无需额外权限：onRequest 看到协议转换前的
+入站 body，可改写后交给网关；正常鉴权、Profile 和分享 key 的模型授权检查仍会执行。
+onResponse 看到网关转换后的客户端响应；Coding Agent 专用 key 使用绑定账号/Profile，
+内部 key 和分享 key 的推理响应使用实际模型路由的账号/Profile。尚未确定 Profile 的请求没有 identity。
+网关 SSE 以 Readable 返回，onResponse 在开始发送前执行一次，可以连接 Transform 逐块处理。
+它不是传输结束通知，不应在回调里等整条流结束；需要结束通知时监听流的 end/close/error。
+http.signal 只覆盖回调寿命，不代表整条 SSE 流的寿命；后续流事件不得继续使用已结束回调的宿主能力。
 定时执行使用 scheduler.every；资源使用 lifecycle.add/acquire，按所在上下文寿命清理。
 前端 events.on 订阅业务事件，messages.on 接收插件自定义页面消息；Agent output.emit 发布运行事件。
+后端 ctx.events.on 需要 events 权限，按账号和 Profile 授权订阅宿主业务事件，包含原生会话事件，不限于插件创建的会话。
 
 ## 单聊实时会话
 

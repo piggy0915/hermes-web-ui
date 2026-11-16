@@ -1351,6 +1351,8 @@ export default {
     clarifyTitle: 'L\'agent a une question pour vous',
     clarifyPlaceholder: 'Tapez votre réponse...',
     clarifySubmit: 'Répondre',
+    clarifySendFailed: 'La réception de votre réponse reste à confirmer. Elle a été conservée. Veuillez réessayer.',
+    approvalSendFailed: 'Votre décision d’approbation n’a pas été confirmée. Veuillez réessayer.',
     clarifyDismiss: 'Ignorer',
     interactionExpired: 'Cette demande a expiré et a été fermée.',
     interactionCountdown: '{time} restante',

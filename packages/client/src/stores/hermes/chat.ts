@@ -428,6 +428,8 @@ export interface PendingApproval {
   isMemoryWrite: boolean
   requestedAt: number
   countdownDeadline: number
+  submitting?: boolean
+  submissionFailed?: boolean
 }
 
 export interface PendingClarify {
@@ -440,6 +442,8 @@ export interface PendingClarify {
   timeoutMs: number
   requestedAt: number
   countdownDeadline: number
+  submitting?: boolean
+  submissionFailed?: boolean
 }
 
 export interface QueueInsertionState {
@@ -3484,6 +3488,8 @@ function createChatState(scopedSessionId?: string) {
     const sid = evt.session_id
     const approvalId = (evt as any).approval_id as string | undefined
     if (!sid || !approvalId) return
+    const previous = pendingApprovals.value.get(sid)
+    const sameRequest = previous?.approvalId === approvalId ? previous : undefined
     if (pendingApprovalResponseIds.get(sid) !== approvalId) pendingApprovalResponseIds.delete(sid)
     const description = String((evt as any).description || '')
     const normalizedDescription = description.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -3499,6 +3505,8 @@ function createChatState(scopedSessionId?: string) {
     pendingApprovals.value.set(sid, {
       sessionId: sid,
       approvalId,
+      submitting: sameRequest?.submitting,
+      submissionFailed: sameRequest?.submissionFailed,
       command: String((evt as any).command || ''),
       description,
       choices: isMemoryWrite ? ['once', 'deny'] : choices.length ? choices : ['once', 'session', 'deny'],
@@ -3542,13 +3550,17 @@ function createChatState(scopedSessionId?: string) {
     const sid = evt.session_id
     const clarifyId = (evt as any).clarify_id as string | undefined
     if (!sid || !clarifyId) return
+    const previous = pendingClarifies.value.get(sid)
+    const sameQuestion = previous?.clarifyId === clarifyId ? previous : undefined
     if (pendingClarifyResponseIds.get(sid) !== clarifyId) pendingClarifyResponseIds.delete(sid)
     pendingClarifies.value.set(sid, {
       sessionId: sid,
       clarifyId,
       question: String((evt as any).question || ''),
       choices: Array.isArray((evt as any).choices) ? (evt as any).choices : null,
-      initialResponse: String((evt as any).initial_response || ''),
+      initialResponse: sameQuestion?.initialResponse ?? String((evt as any).initial_response || ''),
+      submitting: sameQuestion?.submitting,
+      submissionFailed: sameQuestion?.submissionFailed,
       responseMode: String((evt as any).response_mode || ''),
       timeoutMs: Number((evt as any).timeout_ms) || 300000,
       requestedAt: Date.now(),
@@ -3574,7 +3586,12 @@ function createChatState(scopedSessionId?: string) {
       return
     }
     if (clarifyId && current.clarifyId !== clarifyId) return
-    if ((evt as any).resolved === false) {
+    const expired = ['timeout', 'timed_out', 'cancelled', 'aborted'].includes(evt.reason || '')
+    if ((evt as any).resolved === false || expired) {
+      if (expired) {
+        dismissPendingClarifyFor(sid, current.clarifyId)
+        return
+      }
       if ((evt as any).stale === true || isPendingInteractionExpiredError((evt as any).error || (evt as any).reason)) {
         dismissPendingClarifyFor(sid, current.clarifyId)
         if (attempted) notifyPendingInteractionExpired()
@@ -3617,37 +3634,76 @@ function createChatState(scopedSessionId?: string) {
     pendingClarifies.value = new Map(pendingClarifies.value)
   }
 
-  function respondToClarifyFor(sessionId: string, clarifyId: string, response: string): PendingInteractionSubmitResult {
+  async function respondToClarifyFor(sessionId: string, clarifyId: string, response: string): Promise<PendingInteractionSubmitResult> {
     const pending = pendingClarifies.value.get(sessionId)
-    if (!pending || pending.clarifyId !== clarifyId) return 'missing'
-    respondClarify(sessionId, clarifyId, response, sessionId.startsWith('person-main-') ? 'chat-run' : runtimeTransport())
+    if (!pending || pending.clarifyId !== clarifyId || pending.submitting) return 'missing'
+    pending.submitting = true
+    pending.submissionFailed = false
+    pending.initialResponse = response
     pendingClarifyResponseIds.set(sessionId, clarifyId)
-    return 'submitted'
+    try {
+      const session = sessions.value.find(item => item.id === sessionId)
+      await respondClarify(sessionId, clarifyId, response, sessionId.startsWith('person-main-') ? 'chat-run' : runtimeTransport(), session?.profile)
+      dismissPendingClarifyFor(sessionId, clarifyId)
+      return 'submitted'
+    } catch (error) {
+      if (isPendingInteractionExpiredError(error)) {
+        if (pendingClarifies.value.get(sessionId)?.clarifyId === clarifyId) {
+          dismissPendingClarifyFor(sessionId, clarifyId)
+          notifyPendingInteractionExpired()
+        }
+        return 'expired'
+      }
+      const current = pendingClarifies.value.get(sessionId)
+      if (current?.clarifyId === clarifyId) current.submissionFailed = true
+      throw error
+    } finally {
+      const current = pendingClarifies.value.get(sessionId)
+      if (current?.clarifyId === clarifyId) current.submitting = false
+      if (pendingClarifyResponseIds.get(sessionId) === clarifyId) pendingClarifyResponseIds.delete(sessionId)
+    }
   }
 
-  function respondToClarify(response: string): PendingInteractionSubmitResult {
+  async function respondToClarify(response: string): Promise<PendingInteractionSubmitResult> {
     const pending = activePendingClarify.value
     if (!pending) return 'missing'
-    const result = respondToClarifyFor(pending.sessionId, pending.clarifyId, response)
-    if (result === 'submitted') dismissPendingClarifyFor(pending.sessionId, pending.clarifyId)
-    return result
+    return respondToClarifyFor(pending.sessionId, pending.clarifyId, response)
   }
 
 
-  function respondApprovalFor(sessionId: string, approvalId: string, choice: PendingApproval['choices'][number]): PendingInteractionSubmitResult {
+  async function respondApprovalFor(sessionId: string, approvalId: string, choice: PendingApproval['choices'][number]): Promise<PendingInteractionSubmitResult> {
     const pending = pendingApprovals.value.get(sessionId)
-    if (!pending || pending.approvalId !== approvalId) return 'missing'
-    respondToolApproval(sessionId, approvalId, choice, sessionId.startsWith('person-main-') ? 'chat-run' : runtimeTransport())
+    if (!pending || pending.approvalId !== approvalId || pending.submitting) return 'missing'
+    pending.submitting = true
+    pending.submissionFailed = false
     pendingApprovalResponseIds.set(sessionId, approvalId)
-    return 'submitted'
+    try {
+      const session = sessions.value.find(item => item.id === sessionId)
+      await respondToolApproval(sessionId, approvalId, choice, sessionId.startsWith('person-main-') ? 'chat-run' : runtimeTransport(), session?.profile)
+      dismissPendingApprovalFor(sessionId, approvalId)
+      return 'submitted'
+    } catch (error) {
+      if (isPendingInteractionExpiredError(error)) {
+        if (pendingApprovals.value.get(sessionId)?.approvalId === approvalId) {
+          dismissPendingApprovalFor(sessionId, approvalId)
+          notifyPendingInteractionExpired()
+        }
+        return 'expired'
+      }
+      const current = pendingApprovals.value.get(sessionId)
+      if (current?.approvalId === approvalId) current.submissionFailed = true
+      throw error
+    } finally {
+      const current = pendingApprovals.value.get(sessionId)
+      if (current?.approvalId === approvalId) current.submitting = false
+      if (pendingApprovalResponseIds.get(sessionId) === approvalId) pendingApprovalResponseIds.delete(sessionId)
+    }
   }
 
-  function respondApproval(choice: PendingApproval['choices'][number]): PendingInteractionSubmitResult {
+  async function respondApproval(choice: PendingApproval['choices'][number]): Promise<PendingInteractionSubmitResult> {
     const pending = activePendingApproval.value
     if (!pending) return 'missing'
-    const result = respondApprovalFor(pending.sessionId, pending.approvalId, choice)
-    if (result === 'submitted') dismissPendingApprovalFor(pending.sessionId, pending.approvalId)
-    return result
+    return respondApprovalFor(pending.sessionId, pending.approvalId, choice)
   }
 
   function updateSessionTitle(sessionId: string) {
