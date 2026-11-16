@@ -7,6 +7,8 @@ import { getStoredUserId } from '@/api/client'
 import { createPluginSessionBridge } from '@/api/studio/plugin-sessions'
 import { pluginApi, pluginInvoke, pluginRequest, type InstalledPlugin, type Json, type PluginEvent } from '@/api/studio/plugins'
 import { pluginFrameDocument } from '@/plugins/frame'
+import { pluginThemeSnapshot } from '@/plugins/theme'
+import { generateClientUuid } from '@/utils/client-random'
 import { assertJson } from '../../../../plugin-sdk/src'
 import ModelCascader from '@/components/hermes/models/ModelCascader.vue'
 import { usePluginModelPicker } from '@/composables/usePluginModelPicker'
@@ -29,7 +31,7 @@ let release: (() => void) | undefined
 watch(() => [frame.value, props.plugin, props.profile, props.view, props.sessionId, props.data, route.fullPath, locale.value] as const, async () => {
   release?.(); error.value = ''
   if (!frame.value) return
-  const element = frame.value, controller = new AbortController(), channel = crypto.randomUUID()
+  const element = frame.value, controller = new AbortController(), channel = generateClientUuid()
   const profile = props.profile, plugin = props.plugin, sessionId = props.sessionId
   let source: string | undefined, ready = false, started = false, timer: ReturnType<typeof setTimeout> | undefined
   let cursor = 0, generation = ''
@@ -57,9 +59,7 @@ watch(() => [frame.value, props.plugin, props.profile, props.view, props.session
     if (!controller.signal.aborted) timer = setTimeout(poll, 1500)
   }
   function themeSnapshot() {
-    const computed = getComputedStyle(element), theme: Record<string, string> = {}
-    for (const key of ['--text-primary', '--text-secondary', '--text-muted', '--bg-card', '--bg-secondary', '--border-color', '--accent-primary', '--radius-component']) theme[key] = computed.getPropertyValue(key)
-    return theme
+    return pluginThemeSnapshot(element)
   }
   const appearance = new MutationObserver(() => { if (started) send({ type: 'theme', theme: themeSnapshot() }) })
   appearance.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] })
