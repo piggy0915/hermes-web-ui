@@ -168,6 +168,11 @@ transport.connected/disconnected/error/closed 描述连接状态。调用监听�
 输入、options、事件和结果沿用 SDK JSON 限制；过大的事件会报告 transport.error，调用者可分页读取历史。
 连接寿命绑定创建它的上下文：页面卸载、插件停用、调用取消均释放资源；普通 RPC 不适合承载长期订阅。
 
+App 插件页面通过 Studio 中继使用同一实时句柄，支持单聊和 BOT 会话；局域网、云中继及 P2P
+沿用宿主账号、Profile、会话与插件权限校验，插件不会获得认证凭据。需要配套更新 App、Studio
+及云中继服务；旧中继未开放 `/plugins` 通道时会明确报告不支持。网络恢复后只重建订阅并恢复快照，
+不会重发 run 等控制指令。退出页面、切换账号/设备/Profile 时释放页面连接，不停止正在运行的任务。
+
 ## BOT 完整模块
 
 `host.bots.list/create/get/configure/clear/remove` 管理 BOT 角色及对话；create 输入沿用宿主 title、bot_type、
@@ -193,6 +198,9 @@ BOT 变化通过 person.updated 事件通知，可重新 get 权威配置、任�
 声明 `browser.cdp` 后，使用 `host.browser.tabs.list/create/close` 和 `host.browser.cdp.attach/send/events/release`。
 该权限独立于 api.read/api.write；host.request 不能绕过浏览器模块访问浏览器代理接口。
 仅使用当前账号/Profile 已授权共享、且仍绑定的桌面浏览器；无桌面或授权已撤销时明确失败。
+本地和远程 Desktop 均由已登录的主窗口建立同一条账号/Profile 绑定的浏览器连接。
+插件通过相同的 host.browser 接口访问当前 Desktop；本地使用无需另起 MCP 子进程或配置调试端口。
+主窗口退出登录、切换账号/Profile、替换文档或关闭时撤销原连接，旧调用不会转移到其他 Desktop。
 不开放调试端口或 Studio 认证凭证，不创建另外的浏览器或浏览器 Profile。CDP 可以访问当前页面的调试及会话数据。
 
 ```js

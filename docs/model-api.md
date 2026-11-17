@@ -141,6 +141,14 @@ an inserted `/v1`. The gateway applies Codex's native streaming-only, `store=fal
 request policy and omits unsupported sampling/output-limit fields. JSON callers
 receive the collected terminal Responses object from that upstream stream.
 
+When Chat Completions thinking models are exposed through Responses, the gateway
+seals their reasoning text in `encrypted_content` for clients such as Hermes to
+retain and replay. The gateway restores that text for subsequent tool calls;
+DeepSeek-compatible history without captured reasoning receives a non-empty
+placeholder. Upstream SSE keep-alive comments become `response.in_progress`
+events so Responses clients can observe an active connection during inference
+queues or long thinking pauses.
+
 ## Provider ownership and migration
 
 On the authenticated user's first access, Studio imports all accessible Profiles
@@ -154,6 +162,13 @@ display preferences and the generated internal key live directly in this account
 directory. Additional OAuth identities have Provider-owned `credentials/` slots.
 The `profiles/` directory holds source backups, import/projection metadata and
 runtime model selections; it does not partition the live Provider pool.
+
+Refreshing one Provider resolves only its own credentials. A global refresh skips
+unavailable grants and keeps the last working catalog when a probe fails. Live
+catalogs and their restore snapshots are shared across Profiles, and catalog
+changes update the Hermes gateway projection. Removing a Provider clears its
+account record, catalog and runtime selections; credentials still referenced by
+another Provider are retained. Source backups and other accounts are unchanged.
 
 Session and message tables, history formats and session IDs are unchanged.
 Stored logical Provider IDs and gateway-qualified selections are resolved to the
