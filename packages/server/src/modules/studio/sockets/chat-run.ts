@@ -8,7 +8,7 @@ import { personResultPrompt } from '../services/person/result-prompt'
 import { personUser } from '../services/person/catalog'
 import { personConversationFlows, personConversationTimeline } from '../services/person/flow-conversation'
 import { personBackgroundPendingCount } from '../repositories/person-store'
-import { personDeliveryCurrent, finishPersonDelivery, cancelPersonDelivery } from '../services/person/delivery'
+import { personDeliveryClaimIsCurrent, retryPersonDelivery, cancelPersonDelivery } from '../services/person/delivery'
 import { stageDeliveryContext, assertPersonStage } from '../repositories/person-stage-store'
 import { finishPersonStageDelivery } from '../services/person/stage-flows'
 import type { PersonRuntimePort } from '../public/person-runtime'
@@ -23,7 +23,7 @@ import { ensurePersonSession } from '../services/person/chat-agent'
 import { requirePersonAgents } from '../services/person/agents'
 import { isNativeCodingAgent } from '../contracts/agents/native-coding-agents'
 import { withRunUsage, onRunUsageUpdated } from '../repositories/run-usage-store'
-import { savePersonTaskReturn, withPersonTaskReturns } from '../repositories/person-return-store'
+import { withPersonTaskReturns } from '../repositories/person-return-store'
 import { agentFamilyForRuntime, isAgentRuntime } from '../contracts/agents/runtime'
 import { isBuiltinEkkoAgent, normalizeEkkoRunData } from '../contracts/history-source'
 import { recordSessionUploadAttachments } from '../services/files/session-uploads'
@@ -1505,6 +1505,10 @@ export class ChatRunSocket {
       if (isPersonSession(data.session_id) && data.clarify_id.startsWith('person-interaction:')) {
         try {
           await answerPersonChatInteraction(socketUser!.id, data.clarify_id, data.response || '', false, data.session_id!)
+          // A concurrent Bot turn can defer the session-wide question update.
+          socket.emit('clarify.resolved', {
+            event: 'clarify.resolved', session_id: data.session_id, clarify_id: data.clarify_id, resolved: true, reason: 'response',
+          })
           this.syncPersonInteraction(socketUser!.id)
         } catch (error) {
           socket.emit('clarify.resolved', { event: 'clarify.resolved', session_id: data.session_id, clarify_id: data.clarify_id, resolved: false, error: String(error) })
@@ -1558,7 +1562,8 @@ export class ChatRunSocket {
       try {
         if (shared && !buildResumeEvents(this.sessionMap.get(data.session_id)?.events || []).some(entry => entry.event === 'clarify.requested' && entry.data?.clarify_id === data.clarify_id)) throw new Error('Clarification does not belong to this session')
         const result = await this.bridge.clarifyRespond(data.clarify_id, data.response || '')
-        const resolved = Boolean((result as any)?.resolved)
+        const resolved = result.resolved === true
+        this.clearClarifyEventState(data.session_id, data.clarify_id)
         this.emitToSession(socket, data.session_id, 'clarify.resolved', {
           event: 'clarify.resolved',
           clarify_id: data.clarify_id,
@@ -1568,15 +1573,16 @@ export class ChatRunSocket {
             error: 'Clarification is no longer pending.',
           } : {}),
         })
-        if (resolved) {
-          this.clearClarifyEventState(data.session_id, data.clarify_id)
-        }
       } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        // Older Hermes brokers report a missing route as an RPC error.
+        const stale = /unknown (?:clarify|clarification) request\b/i.test(error)
+        if (stale) this.clearClarifyEventState(data.session_id, data.clarify_id)
         this.emitToSession(socket, data.session_id, 'clarify.resolved', {
           event: 'clarify.resolved',
           clarify_id: data.clarify_id,
           resolved: false,
-          error: err instanceof Error ? err.message : String(err),
+          ...(stale ? { stale: true, error: 'Clarification is no longer pending.' } : { error }),
         })
       }
     })
@@ -2836,14 +2842,16 @@ export class ChatRunSocket {
   }
 
   /** Reuse Ekko's queue and origin-context callback path for every Person worker. */
-  async deliverPersonResult(result: PersonResultDelivery) {
-    const { origin, user, executionId } = result
+  async deliverPersonResult(result: PersonResultDelivery & { claimId: string }) {
+    const { origin, user, executionId, claimId } = result
     if (!ownsPersonSession(user.id, getSession(origin.sessionId))) throw new Error('Session not found')
     const state = await this.sessionStateForBackground(origin.sessionId)
     if (!state || !ownsPersonSession(user.id, getSession(origin.sessionId))) throw new Error('Session not found')
     if (state.backgroundWakeStopped) throw new Error('Background reporting is paused until the next user message')
+    const personDelivery = {userId:user.id,executionId,claimId,acceptanceReturnId:origin.acceptanceReturnId}
+    if (!personDeliveryClaimIsCurrent(personDelivery) || state.activePersonDeliveryClaimId === claimId) return
     const queueId = personResultQueueId(executionId, origin.acceptanceReturnId)
-    if (state.queue.some(item => item.queue_id === queueId)) return
+    if (state.queue.some(item => item.personDelivery?.claimId === claimId)) return
     const session = getSession(origin.sessionId)!
     const { receipt, processing, input, messages } = personResultPrompt(result)
     state.queue.push({ queue_id: queueId, profile: session.profile || 'default', source: 'builtin_agent', codingAgentId: 'ekko-agent',
@@ -2851,8 +2859,8 @@ export class ChatRunSocket {
       input,
       backgroundDelegationId: queueId, autonomous: true,
       backgroundContinuationContext: { runtime: 'ekko', version: 1, subagentId: queueId, originRunId: origin.runId,
-        originStep: 0, messages, memoryPolicy: 'disabled' },
-      personDelivery: { userId: user.id, executionId,acceptanceReturnId:origin.acceptanceReturnId },
+        originStep: 0, messages, memoryPolicy: 'disabled', personDelivery },
+      personDelivery,
     })
     if (!state.isWorking) this.dequeueNextQueuedRun(this.socketForBackgroundRun(origin.sessionId), origin.sessionId)
   }
@@ -2921,17 +2929,19 @@ export class ChatRunSocket {
       }
     }
     if (next.personDelivery) {
-      const { userId, executionId } = next.personDelivery
+      const { userId, executionId, claimId } = next.personDelivery
       try {
         const user = personUser(userId)
-        if (!ownsPersonSession(userId, getSession(sessionId)) || !personDeliveryCurrent(userId, executionId,next.personDelivery.acceptanceReturnId || '')) throw new Error('Background result is no longer current')
+        if (!ownsPersonSession(userId, getSession(sessionId)) || !personDeliveryClaimIsCurrent(next.personDelivery)) throw new Error('Background result is no longer current')
+        const state = this.sessionMap.get(sessionId)
+        if (state) state.activePersonDeliveryClaimId = claimId
         // Never inherit the identity of a disconnected or unrelated draining socket.
         socket = { id: `person-result-${executionId}`, connected: false, data: { user }, join: () => {},
           emit: (event: string, payload: any) => this.nsp.to(`session:${sessionId}`).emit(event, payload),
           to: (room: string) => ({ emit: (event: string, payload: any) => this.nsp.to(room).emit(event, payload) }),
         } as unknown as Socket
       } catch (error) {
-        finishPersonDelivery(userId, executionId, false, String(error),next.personDelivery.acceptanceReturnId)
+        retryPersonDelivery(next.personDelivery,String(error))
         const state = this.sessionMap.get(sessionId)
         if (state) state.isWorking = false
         this.dequeueNextQueuedRun(socket, sessionId, fallbackProfile)
@@ -2959,6 +2969,7 @@ export class ChatRunSocket {
       ? backgroundContinuationContext.profile
       : next.profile || fallbackProfile
     let deliverySettled = false
+    let deliveryError = 'Result reporting interrupted'
     const execution = this.executeRun(socket, {
       onEvent: next.personStageDelivery ? (event:string,payload:any) => {
         if (event !== 'run.completed' && event !== 'run.failed') return
@@ -2966,10 +2977,8 @@ export class ChatRunSocket {
         finishPersonStageDelivery(next.personStageDelivery!.userId,next.personStageDelivery!.deliveryId,event === 'run.completed',String(payload?.error || ''))
       } : next.personDelivery ? (event: string, payload: any) => {
         if (event !== 'run.completed' && event !== 'run.failed') return
-        if (!payload.waiting_for_tasks) payload.person_task_return = savePersonTaskReturn(next.personDelivery!.userId, next.personDelivery!.executionId,
-          sessionId, payload.message_id || payload.run_usage?.assistantMessageId)
+        if (event === 'run.failed') retryPersonDelivery(next.personDelivery!,String(payload?.error || 'Result reporting failed'))
         deliverySettled = true
-        finishPersonDelivery(next.personDelivery!.userId, next.personDelivery!.executionId, event === 'run.completed', String(payload?.error || ''),next.personDelivery!.acceptanceReturnId)
       } : undefined,
       input: next.input,
       display_input: next.displayInput,
@@ -3010,14 +3019,19 @@ export class ChatRunSocket {
     }, runProfile, skipUserMessage, backgroundContinuationContext, next.pushTargetId)
     void execution.catch(error => {
       if (!next.personDelivery && !next.personStageDelivery) { logger.warn(error, 'Queued run failed'); return }
+      deliveryError = String(error)
       const state = this.sessionMap.get(sessionId)
       if (state) state.isWorking = false
       this.dequeueNextQueuedRun(socket, sessionId, fallbackProfile)
     }).finally(() => {
       if (next.personStageDelivery && !deliverySettled) finishPersonStageDelivery(next.personStageDelivery.userId,next.personStageDelivery.deliveryId,false,'Stage reporting interrupted')
-      if (next.personDelivery && !deliverySettled) {
-        if (this.sessionMap.get(sessionId)?.backgroundWakeStopped) cancelPersonDelivery(next.personDelivery.userId, next.personDelivery.executionId,next.personDelivery.acceptanceReturnId)
-        else finishPersonDelivery(next.personDelivery.userId, next.personDelivery.executionId, false, 'Result reporting interrupted',next.personDelivery.acceptanceReturnId)
+      if (next.personDelivery) {
+        const state = this.sessionMap.get(sessionId)
+        if (state?.activePersonDeliveryClaimId === next.personDelivery.claimId) state.activePersonDeliveryClaimId = undefined
+        if (!deliverySettled) {
+          if (state?.backgroundWakeStopped) cancelPersonDelivery(next.personDelivery)
+          else retryPersonDelivery(next.personDelivery,deliveryError)
+        }
       }
     })
   }
@@ -3683,8 +3697,10 @@ export class ChatRunSocket {
     this.emitPendingInteraction(profile, event, tagged)
     const display = personDisplayEvent(sessionId, event, tagged)
     if (display === null) return
-    this.nsp.to(`session:${sessionId}`).emit(event, display)
-    if (!this.nsp.adapter.rooms.get(`session:${sessionId}`)?.size && socket.connected) {
+    const room = `session:${sessionId}`
+    this.nsp.to(room).emit(event, display)
+    // A new connection can submit before it rejoins a room that still has viewers.
+    if (socket.connected && !this.nsp.adapter.rooms.get(room)?.has(socket.id)) {
       socket.emit(event, display)
     }
   }
