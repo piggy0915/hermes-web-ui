@@ -57,12 +57,25 @@ RUN set -e; \
 # ── 本地补丁：注意力面板（2026-11-04 前只打在运行容器里，重建即丢）──────────
 # patches/attention/ 是一次性补丁包：4 个新文件 + 幂等注册脚本。
 # patch.py 对已应用的注册点会跳过，重复构建安全。
+# 2026-11-18：此处改为「补丁丢失就在这一步报错」。
+# 上游 0.8.28 起 app/.dockerignore 是白名单模式，漏放 '!patches/**' 会让 patches
+# 根本不进构建上下文，补丁被静默跳过、拖到最后一步才报「缺少 AttentionView chunk」。
+# 确有不需补丁的构建场景时显式传 --build-arg SKIP_ATTENTION_PATCH=1。
+ARG SKIP_ATTENTION_PATCH=0
 RUN set -e; \
-    if [ -d /app/patches/attention ]; then \
+    if [ "$SKIP_ATTENTION_PATCH" = "1" ]; then \
+      echo "skip: 显式跳过注意力面板补丁 (SKIP_ATTENTION_PATCH=1)"; \
+    else \
+      test -f /app/patches/attention/patch.py \
+        || { echo "FATAL: /app/patches/attention 未进入构建上下文" >&2; \
+             echo "  常见原因：app/.dockerignore 为白名单模式，缺少 '!patches/**' 这一行。" >&2; exit 1; }; \
       cp -a /app/patches/attention/files/. /app/ && \
       python3 /app/patches/attention/patch.py; \
-    else \
-      echo "skip: /app/patches/attention 不存在（未启用注意力面板补丁）"; \
+      test -f /app/packages/client/src/views/hermes/AttentionView.vue \
+        || { echo "FATAL: 补丁视图未落到 packages/client/src/views/hermes/" >&2; exit 1; }; \
+      grep -q 'hermes.attention' /app/packages/client/src/router/index.ts \
+        || { echo "FATAL: 补丁未注册到 router/index.ts" >&2; exit 1; }; \
+      echo "ok: 补丁已应用并注册" ; \
     fi
 
 RUN npm run build && npm prune --omit=dev
