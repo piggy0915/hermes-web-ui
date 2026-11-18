@@ -34,7 +34,7 @@ USER root
 
 WORKDIR /app
 
-#FROM runtime AS build
+FROM runtime AS build
 COPY package*.json ./
 # Increase Node.js memory limit to prevent OOM during build
 ENV NODE_OPTIONS=--max-old-space-size=4096
