@@ -25,33 +25,39 @@ if exist "%PROJECT_ROOT%\bin" (
 )
 
 if exist "%PROJECT_ROOT%\docs" (
-    echo [3/8] Copying docs ...
+    echo [2/8] Copying docs ...
     xcopy "%PROJECT_ROOT%\docs" "%TARGET_DIR%\docs\" /E /I /Y >nul
     echo   OK docs
 )
 
 if exist "%PROJECT_ROOT%\packages" (
-    echo [4/8] Copying packages ...
+    echo [3/8] Copying packages ...
     xcopy "%PROJECT_ROOT%\packages" "%TARGET_DIR%\packages\" /E /I /Y >nul
     echo   OK packages
 )
 
 if exist "%PROJECT_ROOT%\scripts" (
-    echo [5/8] Copying scripts ...
+    echo [4/8] Copying scripts ...
     xcopy "%PROJECT_ROOT%\scripts" "%TARGET_DIR%\scripts\" /E /I /Y >nul
     echo   OK scripts
 )
 
 if exist "%PROJECT_ROOT%\config" (
-    echo [6/8] Copying config ...
+    echo [5/8] Copying config ...
     xcopy "%PROJECT_ROOT%\config" "%TARGET_DIR%\config\" /E /I /Y >nul
     echo   OK config
 )
 
 if exist "%PROJECT_ROOT%\patches" (
-    echo [7/8] Copying patches ...
+    echo [6/8] Copying patches ...
     xcopy "%PROJECT_ROOT%\patches" "%TARGET_DIR%\patches\" /E /I /Y >nul
     echo   OK patches
+)
+
+if exist "%PROJECT_ROOT%\plugins" (
+    echo [7/8] Copying plugins ...
+    xcopy "%PROJECT_ROOT%\plugins" "%TARGET_DIR%\plugins\" /E /I /Y >nul
+    echo   OK plugins
 )
 
 :: Copy root files
