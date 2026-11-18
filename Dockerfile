@@ -34,6 +34,7 @@ USER root
 
 WORKDIR /app
 
+FROM runtime AS build
 COPY package*.json ./
 # Increase Node.js memory limit to prevent OOM during build
 ENV NODE_OPTIONS=--max-old-space-size=4096
@@ -80,6 +81,12 @@ RUN set -e; \
 
 RUN npm run build && npm prune --omit=dev
 RUN npm run verify:sharp-runtime
+
+FROM runtime
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/bin ./bin
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/node_modules ./node_modules
 
 # ── 构建产物护栏（2026-11-04）──────────────────────────────────────────────
 # 补丁丢失在历史上发生过两次（都表现为「镜像构建成功、功能却消失」）。
