@@ -18,6 +18,8 @@
 !packages/ekko-agent/tsconfig.json
 !packages/ekko-agent/src/**
 !packages/ekko-agent/skills/**
+# 构建到最后一步才报「缺少 AttentionView chunk」——2026-11-18 踩过）+
+!patches/**
 !packages/skills/**
 !packages/plugin-sdk/**
 !packages/mcu/esp32-c3/release/*/firmware.bin
