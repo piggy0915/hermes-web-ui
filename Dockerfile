@@ -6,7 +6,7 @@
 #     不再各自安装（原先 webui 用上游基座，缺 agent-browser 导致 browser_exec 失败）
 # ============================================================
 ARG BASE_IMAGE=hermes-base:main
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS runtime
 
 ARG NODE_VERSION=24.22.1
 
@@ -34,7 +34,7 @@ USER root
 
 WORKDIR /app
 
-FROM runtime AS build
+#FROM runtime AS build
 COPY package*.json ./
 # Increase Node.js memory limit to prevent OOM during build
 ENV NODE_OPTIONS=--max-old-space-size=4096
