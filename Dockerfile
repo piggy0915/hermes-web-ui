@@ -79,6 +79,27 @@ RUN set -e; \
       echo "ok: 补丁已应用并注册" ; \
     fi
 
+# ── 本地补丁：上下文洞察面板（对照 DeepSeek Harness 的 dsh-context）────────
+# patches/context/ 与 attention 同构：4 个新文件 + 幂等注册脚本。
+# 锚点取基座源码的 jobs 路由，与 attention 补丁互不依赖，任意构建顺序都幂等。
+ARG SKIP_CONTEXT_PATCH=0
+RUN set -e; \
+    if [ "$SKIP_CONTEXT_PATCH" = "1" ]; then \
+      echo "skip: 显式跳过上下文面板补丁 (SKIP_CONTEXT_PATCH=1)"; \
+    else \
+      test -f /app/patches/context/patch.py \
+        || { echo "FATAL: /app/patches/context 未进入构建上下文" >&2; \
+             echo "  常见原因：app/.dockerignore 为白名单模式，缺少 !patches/** 这一行。" >&2; exit 1; }; \
+      cp -a /app/patches/context/files/. /app/ && \
+      python3 /app/patches/context/patch.py; \
+      test -f /app/packages/client/src/views/hermes/ContextView.vue \
+        || { echo "FATAL: 上下文补丁视图未落到 packages/client/src/views/hermes/" >&2; exit 1; }; \
+      grep -q 'hermes.context' /app/packages/client/src/router/index.ts \
+        || { echo "FATAL: 上下文补丁未注册到 router/index.ts" >&2; exit 1; }; \
+      echo "ok: 上下文面板补丁已应用并注册" ; \
+    fi
+
+
 RUN npm run build && npm prune --omit=dev
 RUN npm run verify:sharp-runtime
 
@@ -100,6 +121,19 @@ RUN set -e; \
     grep -q 'hermes.attention' /app/dist/client/assets/js/router-*.js \
       || { echo "FATAL: 客户端路由缺少 hermes.attention" >&2; exit 1; }; \
     echo "ok: 注意力面板产物校验通过"
+
+# 上下文面板独立一段 RUN：注意力护栏的末行 echo 不带续行符，
+# 若把后续语句直接追加在同一 RUN 内会被 Dockerfile 解析器当成新指令。
+RUN set -e; \
+    echo "-- 校验上下文面板已进入产物 --"; \
+    test -n "$(ls /app/dist/client/assets/js 2>/dev/null | grep -i '^ContextView-')" \
+      || { echo "FATAL: dist 中缺少 ContextView chunk" >&2; exit 1; }; \
+    grep -q '/api/hermes/context/overview' /app/dist/server/index.js \
+      || { echo "FATAL: server 产物缺少 /api/hermes/context/overview 路由" >&2; exit 1; }; \
+    grep -q 'hermes.context' /app/dist/client/assets/js/router-*.js \
+      || { echo "FATAL: 客户端路由缺少 hermes.context" >&2; exit 1; }; \
+    echo "ok: 上下文面板产物校验通过"
+
 
 ENV NODE_ENV=production
 ENV HOME=/home/agent
